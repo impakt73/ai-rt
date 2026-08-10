@@ -14,6 +14,12 @@ yaw = -25.0
 pitch = -35.0
 roll = 0.0
 
+# Unit-sphere mesh density. Higher values produce more triangles and a smoother
+# silhouette. The same generated mesh is instanced by every object below.
+[geometry]
+latitude_segments = 32
+longitude_segments = 64
+
 [[objects]]
 position = [0.0, 0.0, -3.0]
 radius = 1.0

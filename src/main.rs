@@ -1,4 +1,4 @@
-use std::{error::Error, fs::File, io, path::PathBuf};
+use std::{error::Error, fs::File, io, path::PathBuf, sync::Arc};
 
 use bvh::{
     aabb::{Aabb, Bounded},
@@ -43,6 +43,8 @@ struct Scene {
     camera: CameraDescription,
     light: LightDescription,
     #[serde(default)]
+    geometry: GeometryDescription,
+    #[serde(default)]
     objects: Vec<SphereDescription>,
 }
 
@@ -68,10 +70,46 @@ struct LightDescription {
 }
 
 #[derive(Debug, Deserialize)]
+struct GeometryDescription {
+    #[serde(default = "default_latitude_segments")]
+    latitude_segments: usize,
+    #[serde(default = "default_longitude_segments")]
+    longitude_segments: usize,
+}
+
+impl Default for GeometryDescription {
+    fn default() -> Self {
+        Self {
+            latitude_segments: default_latitude_segments(),
+            longitude_segments: default_longitude_segments(),
+        }
+    }
+}
+
+fn default_latitude_segments() -> usize {
+    32
+}
+
+fn default_longitude_segments() -> usize {
+    64
+}
+
+#[derive(Debug, Deserialize)]
 struct SphereDescription {
     position: [f32; 3],
     radius: f32,
     color: [f32; 3],
+}
+
+#[derive(Debug)]
+struct Triangle {
+    vertices: [Point3<f32>; 3],
+    normal: Vector3<f32>,
+}
+
+#[derive(Debug)]
+struct SphereGeometry {
+    triangles: Vec<Triangle>,
 }
 
 #[derive(Debug)]
@@ -111,6 +149,7 @@ impl BHShape<f32, 3> for Sphere {
 struct RenderScene {
     camera: Camera,
     light_direction: Vector3<f32>,
+    geometry: Arc<SphereGeometry>,
     spheres: Vec<Sphere>,
     bvh: Bvh<f32, 3>,
 }
@@ -192,24 +231,113 @@ fn load_scene(path: &PathBuf) -> Result<RenderScene, Box<dyn Error>> {
         up: camera_rotation * Vector3::new(0.0, 1.0, 0.0),
         forward: camera_rotation * Vector3::new(0.0, 0.0, -1.0),
     };
-    let mut spheres: Vec<_> = description
-        .objects
-        .into_iter()
-        .map(|sphere| Sphere {
+    let geometry = Arc::new(generate_sphere(
+        description.geometry.latitude_segments,
+        description.geometry.longitude_segments,
+    )?);
+    let mut spheres = Vec::with_capacity(description.objects.len());
+    for sphere in description.objects {
+        if !sphere.radius.is_finite() || sphere.radius <= 0.0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "sphere radius must be finite and greater than zero",
+            )
+            .into());
+        }
+        spheres.push(Sphere {
             position: point3_from_array(sphere.position),
             radius: sphere.radius,
             color: vector3_from_array(sphere.color),
             node_index: 0,
-        })
-        .collect();
+        });
+    }
     let bvh = Bvh::build(&mut spheres);
 
     Ok(RenderScene {
         camera,
         light_direction: (light_rotation * Vector3::new(0.0, 0.0, 1.0)).normalize(),
+        geometry,
         spheres,
         bvh,
     })
+}
+
+fn generate_sphere(
+    latitude_segments: usize,
+    longitude_segments: usize,
+) -> Result<SphereGeometry, io::Error> {
+    if latitude_segments < 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "sphere latitude segments must be at least 2",
+        ));
+    }
+    if longitude_segments < 3 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "sphere longitude segments must be at least 3",
+        ));
+    }
+
+    let point_on_sphere = |latitude: usize, longitude: usize| {
+        let theta = std::f32::consts::PI * latitude as f32 / latitude_segments as f32;
+        let phi = 2.0 * std::f32::consts::PI * longitude as f32 / longitude_segments as f32;
+        Point3::new(
+            theta.sin() * phi.cos(),
+            theta.cos(),
+            theta.sin() * phi.sin(),
+        )
+    };
+    let triangle = |a: Point3<f32>, b: Point3<f32>, c: Point3<f32>| {
+        let mut vertices = [a, b, c];
+        let mut normal = (vertices[1] - vertices[0])
+            .cross(&(vertices[2] - vertices[0]))
+            .normalize();
+        if normal.dot(&(vertices[0].coords + vertices[1].coords + vertices[2].coords)) < 0.0 {
+            vertices.swap(1, 2);
+            normal = -normal;
+        }
+        Triangle { vertices, normal }
+    };
+
+    let north_pole = Point3::new(0.0, 1.0, 0.0);
+    let south_pole = Point3::new(0.0, -1.0, 0.0);
+    let triangle_count = longitude_segments
+        .checked_mul(latitude_segments - 1)
+        .and_then(|count| count.checked_mul(2))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "sphere segment counts are too large",
+            )
+        })?;
+    let mut triangles = Vec::with_capacity(triangle_count);
+
+    for longitude in 0..longitude_segments {
+        let next_longitude = (longitude + 1) % longitude_segments;
+        triangles.push(triangle(
+            north_pole,
+            point_on_sphere(1, longitude),
+            point_on_sphere(1, next_longitude),
+        ));
+
+        for latitude in 1..latitude_segments - 1 {
+            let current = point_on_sphere(latitude, longitude);
+            let next = point_on_sphere(latitude, next_longitude);
+            let below = point_on_sphere(latitude + 1, longitude);
+            let below_next = point_on_sphere(latitude + 1, next_longitude);
+            triangles.push(triangle(current, below, next));
+            triangles.push(triangle(next, below, below_next));
+        }
+
+        triangles.push(triangle(
+            point_on_sphere(latitude_segments - 1, longitude),
+            south_pole,
+            point_on_sphere(latitude_segments - 1, next_longitude),
+        ));
+    }
+
+    Ok(SphereGeometry { triangles })
 }
 
 fn rotation_from_degrees(yaw: f32, pitch: f32, roll: f32) -> UnitQuaternion<f32> {
@@ -329,12 +457,12 @@ fn morton_coordinates(index: usize) -> (usize, usize) {
 
 fn shade(origin: Point3<f32>, ray_direction: Vector3<f32>, scene: &RenderScene) -> Vector3<f32> {
     let ray = Ray::new(origin, ray_direction);
-    let Some((distance, sphere)) = scene
+    let Some((distance, normal, sphere)) = scene
         .bvh
         .nearest_traverse_iterator(&ray, &scene.spheres)
         .filter_map(|sphere| {
-            ray_sphere_intersection(origin, ray_direction, sphere)
-                .map(|distance| (distance, sphere))
+            ray_mesh_intersection(origin, ray_direction, sphere, &scene.geometry)
+                .map(|(distance, normal)| (distance, normal, sphere))
         })
         .min_by(|left, right| left.0.total_cmp(&right.0))
     else {
@@ -342,7 +470,6 @@ fn shade(origin: Point3<f32>, ray_direction: Vector3<f32>, scene: &RenderScene) 
     };
 
     let hit_point = origin + ray_direction * distance;
-    let normal = (hit_point - sphere.position).normalize();
     let diffuse = normal.dot(&scene.light_direction).max(0.0);
     let view_direction = (origin - hit_point).normalize();
     let reflected_direction = reflect(-scene.light_direction, normal);
@@ -355,24 +482,55 @@ fn shade(origin: Point3<f32>, ray_direction: Vector3<f32>, scene: &RenderScene) 
     sphere.color * (AMBIENT_STRENGTH + diffuse) + Vector3::repeat(specular)
 }
 
-fn ray_sphere_intersection(
+fn ray_mesh_intersection(
     origin: Point3<f32>,
     direction: Vector3<f32>,
     sphere: &Sphere,
-) -> Option<f32> {
-    let sphere_to_ray = origin - sphere.position;
-    let half_b = sphere_to_ray.dot(&direction);
-    let c = sphere_to_ray.norm_squared() - sphere.radius * sphere.radius;
-    let discriminant = half_b * half_b - c;
+    geometry: &SphereGeometry,
+) -> Option<(f32, Vector3<f32>)> {
+    let local_origin = Point3::from((origin - sphere.position) / sphere.radius);
+    let local_direction = direction / sphere.radius;
 
-    if discriminant < 0.0 {
+    geometry
+        .triangles
+        .iter()
+        .filter_map(|triangle| {
+            ray_triangle_intersection(local_origin, local_direction, triangle)
+                .map(|distance| (distance, triangle.normal))
+        })
+        .min_by(|left, right| left.0.total_cmp(&right.0))
+}
+
+fn ray_triangle_intersection(
+    origin: Point3<f32>,
+    direction: Vector3<f32>,
+    triangle: &Triangle,
+) -> Option<f32> {
+    const PARALLEL_EPSILON: f32 = 1.0e-7;
+
+    let edge1 = triangle.vertices[1] - triangle.vertices[0];
+    let edge2 = triangle.vertices[2] - triangle.vertices[0];
+    let pvec = direction.cross(&edge2);
+    let determinant = edge1.dot(&pvec);
+    if determinant.abs() < PARALLEL_EPSILON {
         return None;
     }
 
-    let square_root = discriminant.sqrt();
-    let near = -half_b - square_root;
-    let far = -half_b + square_root;
-    [near, far].into_iter().find(|distance| *distance >= 0.0)
+    let inverse_determinant = determinant.recip();
+    let tvec = origin - triangle.vertices[0];
+    let u = tvec.dot(&pvec) * inverse_determinant;
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+
+    let qvec = tvec.cross(&edge1);
+    let v = direction.dot(&qvec) * inverse_determinant;
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+
+    let distance = edge2.dot(&qvec) * inverse_determinant;
+    (distance >= 0.0).then_some(distance)
 }
 
 fn point3_from_array(value: [f32; 3]) -> Point3<f32> {
@@ -411,32 +569,63 @@ mod tests {
                 forward: Vector3::new(0.0, 0.0, -1.0),
             },
             light_direction: Vector3::new(0.0, 0.0, 1.0),
+            geometry: Arc::new(generate_sphere(16, 32).unwrap()),
             spheres,
             bvh,
         }
     }
 
     #[test]
-    fn center_ray_hits_sphere() {
-        let distance = ray_sphere_intersection(
+    fn center_ray_hits_triangle_sphere() {
+        let geometry = generate_sphere(16, 32).unwrap();
+        let distance = ray_mesh_intersection(
             Point3::origin(),
             Vector3::new(0.0, 0.0, -1.0),
             &test_sphere(),
+            &geometry,
         )
         .unwrap();
 
-        assert!((distance - 2.0).abs() < f32::EPSILON);
+        assert!((distance.0 - 2.0).abs() < 0.02);
     }
 
     #[test]
-    fn ray_misses_sphere() {
+    fn ray_misses_triangle_sphere() {
+        let geometry = generate_sphere(16, 32).unwrap();
         assert!(
-            ray_sphere_intersection(
+            ray_mesh_intersection(
                 Point3::origin(),
                 Vector3::new(1.0, 0.0, 0.0),
-                &test_sphere()
+                &test_sphere(),
+                &geometry,
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn sphere_generation_has_configurable_triangle_density() {
+        let coarse = generate_sphere(4, 8).unwrap();
+        let detailed = generate_sphere(8, 16).unwrap();
+
+        assert_eq!(coarse.triangles.len(), 2 * 8 * (4 - 1));
+        assert_eq!(detailed.triangles.len(), 2 * 16 * (8 - 1));
+    }
+
+    #[test]
+    fn ray_triangle_intersection_hits_front_face() {
+        let triangle = Triangle {
+            vertices: [
+                Point3::new(-1.0, -1.0, -2.0),
+                Point3::new(1.0, -1.0, -2.0),
+                Point3::new(0.0, 1.0, -2.0),
+            ],
+            normal: Vector3::new(0.0, 0.0, 1.0),
+        };
+
+        assert_eq!(
+            ray_triangle_intersection(Point3::origin(), Vector3::new(0.0, 0.0, -1.0), &triangle,),
+            Some(2.0)
         );
     }
 
@@ -523,6 +712,10 @@ mod tests {
             pitch = -35.0
             roll = 0.0
 
+            [geometry]
+            latitude_segments = 4
+            longitude_segments = 8
+
             [[objects]]
             position = [0.0, 0.0, -3.0]
             radius = 1.0
@@ -537,5 +730,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(scene.objects.len(), 2);
+        assert_eq!(scene.geometry.latitude_segments, 4);
+        assert_eq!(scene.geometry.longitude_segments, 8);
     }
 }

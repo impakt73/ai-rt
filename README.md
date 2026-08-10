@@ -44,10 +44,12 @@ Use a different scene description with `--scene`:
 cargo run -- --scene examples/scene.toml --output render.png
 ```
 
-Scene files contain a `[camera]` section, a `[light]` section, and any number
-of `[[objects]]` sphere entries. Positions and colors are XYZ/RGB arrays;
-camera and light `yaw`, `pitch`, and `roll` values are degrees. See
-`scene.toml` for a complete example.
+Scene files contain `[camera]`, `[light]`, and `[geometry]` sections, along
+with any number of `[[objects]]` sphere entries. Positions and colors are
+XYZ/RGB arrays; camera and light `yaw`, `pitch`, and `roll` values are degrees.
+`geometry.latitude_segments` and `geometry.longitude_segments` control the
+triangle density of the one unit sphere mesh that is shared by all objects.
+See `scene.toml` for a complete example.
 
 Show all available options with:
 
