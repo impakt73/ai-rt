@@ -7,8 +7,8 @@ the compiler and automated tests as the renderer grows.
 ## Current Status
 
 The binary ray traces a red sphere with a hardcoded directional light and a
-simple Phong shader. The background is black. By default, it writes a `64x64`
-image to `output.png`.
+simple Phong shader. The background is black, and each pixel is ray traced in
+parallel with Rayon. By default, it writes a `64x64` image to `output.png`.
 
 ## Development Direction
 

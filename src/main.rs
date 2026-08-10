@@ -2,6 +2,7 @@ use std::{error::Error, fs::File, io, path::PathBuf};
 
 use clap::Parser;
 use glam::Vec3;
+use rayon::prelude::*;
 
 const CAMERA_POSITION: Vec3 = Vec3::ZERO;
 const SPHERE_CENTER: Vec3 = Vec3::new(0.0, 0.0, -3.0);
@@ -65,27 +66,28 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn render(width: u32, height: u32, byte_count: usize) -> Vec<u8> {
-    let mut pixels = Vec::with_capacity(byte_count);
     let aspect_ratio = width as f32 / height as f32;
     let light_direction = LIGHT_DIRECTION.normalize();
+    let pixel_count = byte_count / 3;
 
-    for y in 0..height {
-        for x in 0..width {
+    (0..pixel_count)
+        .into_par_iter()
+        .flat_map_iter(|index| {
+            let x = index % width as usize;
+            let y = index / width as usize;
             let screen_x =
                 ((x as f32 + 0.5) / width as f32 * 2.0 - 1.0) * aspect_ratio * HALF_FOV_TANGENT;
             let screen_y = (1.0 - (y as f32 + 0.5) / height as f32 * 2.0) * HALF_FOV_TANGENT;
             let ray_direction = Vec3::new(screen_x, screen_y, -1.0).normalize();
             let color = shade(ray_direction, light_direction);
 
-            pixels.extend([
+            [
                 (color.x.clamp(0.0, 1.0) * 255.0) as u8,
                 (color.y.clamp(0.0, 1.0) * 255.0) as u8,
                 (color.z.clamp(0.0, 1.0) * 255.0) as u8,
-            ]);
-        }
-    }
-
-    pixels
+            ]
+        })
+        .collect()
 }
 
 fn shade(ray_direction: Vec3, light_direction: Vec3) -> Vec3 {

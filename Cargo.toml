@@ -7,3 +7,4 @@ edition = "2024"
 clap = { version = "4", features = ["derive"] }
 glam = "0.29"
 png = "0.17"
+rayon = "1.10"
