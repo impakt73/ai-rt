@@ -6,8 +6,8 @@ the compiler and automated tests as the renderer grows.
 
 ## Current Status
 
-The project is at its initial scaffold stage. The binary currently prints a
-hello world message so the Rust toolchain and crate setup can be verified.
+The binary generates a solid red PNG image. By default, it writes a `64x64`
+image to `output.png`.
 
 ## Development Direction
 
@@ -24,10 +24,22 @@ verification before it is merged.
 
 ## Getting Started
 
-Run the initial program with:
+Run the program with its default settings:
 
 ```sh
 cargo run
+```
+
+Specify the image dimensions and output filename with CLI arguments:
+
+```sh
+cargo run -- --width 128 --height 96 --output render.png
+```
+
+Show all available options with:
+
+```sh
+cargo run -- --help
 ```
 
 Format and check the project with:
