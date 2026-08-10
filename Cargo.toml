@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bvh = "0.12"
 clap = { version = "4", features = ["derive"] }
-glam = "0.29"
+nalgebra = "0.34"
 png = "0.17"
 rayon = "1.10"
 serde = { version = "1", features = ["derive"] }

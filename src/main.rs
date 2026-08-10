@@ -1,7 +1,13 @@
 use std::{error::Error, fs::File, io, path::PathBuf};
 
+use bvh::{
+    aabb::{Aabb, Bounded},
+    bounding_hierarchy::BHShape,
+    bvh::Bvh,
+    ray::Ray,
+};
 use clap::Parser;
-use glam::{EulerRot, Quat, Vec3};
+use nalgebra::{Point3, UnitQuaternion, Vector3};
 use rayon::prelude::*;
 use serde::Deserialize;
 
@@ -70,24 +76,43 @@ struct SphereDescription {
 
 #[derive(Debug)]
 struct Camera {
-    position: Vec3,
-    right: Vec3,
-    up: Vec3,
-    forward: Vec3,
+    position: Point3<f32>,
+    right: Vector3<f32>,
+    up: Vector3<f32>,
+    forward: Vector3<f32>,
 }
 
 #[derive(Debug)]
 struct Sphere {
-    position: Vec3,
+    position: Point3<f32>,
     radius: f32,
-    color: Vec3,
+    color: Vector3<f32>,
+    node_index: usize,
+}
+
+impl Bounded<f32, 3> for Sphere {
+    fn aabb(&self) -> Aabb<f32, 3> {
+        let radius = Vector3::repeat(self.radius);
+        Aabb::with_bounds(self.position - radius, self.position + radius)
+    }
+}
+
+impl BHShape<f32, 3> for Sphere {
+    fn set_bh_node_index(&mut self, index: usize) {
+        self.node_index = index;
+    }
+
+    fn bh_node_index(&self) -> usize {
+        self.node_index
+    }
 }
 
 #[derive(Debug)]
 struct RenderScene {
     camera: Camera,
-    light_direction: Vec3,
+    light_direction: Vector3<f32>,
     spheres: Vec<Sphere>,
+    bvh: Bvh<f32, 3>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -102,7 +127,7 @@ impl PixelData {
         }
     }
 
-    fn from_color(color: Vec3) -> Self {
+    fn from_color(color: Vector3<f32>) -> Self {
         Self::new(
             (color.x.clamp(0.0, 1.0) * 255.0) as u8,
             (color.y.clamp(0.0, 1.0) * 255.0) as u8,
@@ -162,35 +187,35 @@ fn load_scene(path: &PathBuf) -> Result<RenderScene, Box<dyn Error>> {
     );
 
     let camera = Camera {
-        position: Vec3::from_array(description.camera.position),
-        right: camera_rotation * Vec3::X,
-        up: camera_rotation * Vec3::Y,
-        forward: camera_rotation * Vec3::NEG_Z,
+        position: point3_from_array(description.camera.position),
+        right: camera_rotation * Vector3::new(1.0, 0.0, 0.0),
+        up: camera_rotation * Vector3::new(0.0, 1.0, 0.0),
+        forward: camera_rotation * Vector3::new(0.0, 0.0, -1.0),
     };
-    let spheres = description
+    let mut spheres: Vec<_> = description
         .objects
         .into_iter()
         .map(|sphere| Sphere {
-            position: Vec3::from_array(sphere.position),
+            position: point3_from_array(sphere.position),
             radius: sphere.radius,
-            color: Vec3::from_array(sphere.color),
+            color: vector3_from_array(sphere.color),
+            node_index: 0,
         })
         .collect();
+    let bvh = Bvh::build(&mut spheres);
 
     Ok(RenderScene {
         camera,
-        light_direction: (light_rotation * Vec3::Z).normalize(),
+        light_direction: (light_rotation * Vector3::new(0.0, 0.0, 1.0)).normalize(),
         spheres,
+        bvh,
     })
 }
 
-fn rotation_from_degrees(yaw: f32, pitch: f32, roll: f32) -> Quat {
-    Quat::from_euler(
-        EulerRot::YXZ,
-        yaw.to_radians(),
-        pitch.to_radians(),
-        roll.to_radians(),
-    )
+fn rotation_from_degrees(yaw: f32, pitch: f32, roll: f32) -> UnitQuaternion<f32> {
+    UnitQuaternion::from_axis_angle(&Vector3::y_axis(), yaw.to_radians())
+        * UnitQuaternion::from_axis_angle(&Vector3::x_axis(), pitch.to_radians())
+        * UnitQuaternion::from_axis_angle(&Vector3::z_axis(), roll.to_radians())
 }
 
 fn render(width: u32, height: u32, scene: &RenderScene) -> Vec<PixelData> {
@@ -302,37 +327,42 @@ fn morton_coordinates(index: usize) -> (usize, usize) {
     (x, y)
 }
 
-fn shade(origin: Vec3, ray_direction: Vec3, scene: &RenderScene) -> Vec3 {
+fn shade(origin: Point3<f32>, ray_direction: Vector3<f32>, scene: &RenderScene) -> Vector3<f32> {
+    let ray = Ray::new(origin, ray_direction);
     let Some((distance, sphere)) = scene
-        .spheres
-        .iter()
+        .bvh
+        .nearest_traverse_iterator(&ray, &scene.spheres)
         .filter_map(|sphere| {
             ray_sphere_intersection(origin, ray_direction, sphere)
                 .map(|distance| (distance, sphere))
         })
         .min_by(|left, right| left.0.total_cmp(&right.0))
     else {
-        return Vec3::ZERO;
+        return Vector3::zeros();
     };
 
     let hit_point = origin + ray_direction * distance;
     let normal = (hit_point - sphere.position).normalize();
-    let diffuse = normal.dot(scene.light_direction).max(0.0);
+    let diffuse = normal.dot(&scene.light_direction).max(0.0);
     let view_direction = (origin - hit_point).normalize();
-    let reflected_direction = (-scene.light_direction).reflect(normal);
+    let reflected_direction = reflect(-scene.light_direction, normal);
     let specular = reflected_direction
-        .dot(view_direction)
+        .dot(&view_direction)
         .max(0.0)
         .powf(SPECULAR_SHININESS)
         * SPECULAR_STRENGTH;
 
-    sphere.color * (AMBIENT_STRENGTH + diffuse) + Vec3::splat(specular)
+    sphere.color * (AMBIENT_STRENGTH + diffuse) + Vector3::repeat(specular)
 }
 
-fn ray_sphere_intersection(origin: Vec3, direction: Vec3, sphere: &Sphere) -> Option<f32> {
+fn ray_sphere_intersection(
+    origin: Point3<f32>,
+    direction: Vector3<f32>,
+    sphere: &Sphere,
+) -> Option<f32> {
     let sphere_to_ray = origin - sphere.position;
-    let half_b = sphere_to_ray.dot(direction);
-    let c = sphere_to_ray.length_squared() - sphere.radius * sphere.radius;
+    let half_b = sphere_to_ray.dot(&direction);
+    let c = sphere_to_ray.norm_squared() - sphere.radius * sphere.radius;
     let discriminant = half_b * half_b - c;
 
     if discriminant < 0.0 {
@@ -345,28 +375,91 @@ fn ray_sphere_intersection(origin: Vec3, direction: Vec3, sphere: &Sphere) -> Op
     [near, far].into_iter().find(|distance| *distance >= 0.0)
 }
 
+fn point3_from_array(value: [f32; 3]) -> Point3<f32> {
+    Point3::from(value)
+}
+
+fn vector3_from_array(value: [f32; 3]) -> Vector3<f32> {
+    Vector3::new(value[0], value[1], value[2])
+}
+
+fn reflect(vector: Vector3<f32>, normal: Vector3<f32>) -> Vector3<f32> {
+    vector - normal * (2.0 * vector.dot(&normal))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn test_sphere() -> Sphere {
         Sphere {
-            position: Vec3::new(0.0, 0.0, -3.0),
+            position: Point3::new(0.0, 0.0, -3.0),
             radius: 1.0,
-            color: Vec3::ONE,
+            color: Vector3::new(1.0, 1.0, 1.0),
+            node_index: 0,
+        }
+    }
+
+    fn render_scene(spheres: Vec<Sphere>) -> RenderScene {
+        let mut spheres = spheres;
+        let bvh = Bvh::build(&mut spheres);
+        RenderScene {
+            camera: Camera {
+                position: Point3::origin(),
+                right: Vector3::new(1.0, 0.0, 0.0),
+                up: Vector3::new(0.0, 1.0, 0.0),
+                forward: Vector3::new(0.0, 0.0, -1.0),
+            },
+            light_direction: Vector3::new(0.0, 0.0, 1.0),
+            spheres,
+            bvh,
         }
     }
 
     #[test]
     fn center_ray_hits_sphere() {
-        let distance = ray_sphere_intersection(Vec3::ZERO, Vec3::NEG_Z, &test_sphere()).unwrap();
+        let distance = ray_sphere_intersection(
+            Point3::origin(),
+            Vector3::new(0.0, 0.0, -1.0),
+            &test_sphere(),
+        )
+        .unwrap();
 
         assert!((distance - 2.0).abs() < f32::EPSILON);
     }
 
     #[test]
     fn ray_misses_sphere() {
-        assert!(ray_sphere_intersection(Vec3::ZERO, Vec3::X, &test_sphere()).is_none());
+        assert!(
+            ray_sphere_intersection(
+                Point3::origin(),
+                Vector3::new(1.0, 0.0, 0.0),
+                &test_sphere()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn bvh_traversal_filters_spheres_by_ray_bounds() {
+        let scene = render_scene(vec![
+            test_sphere(),
+            Sphere {
+                position: Point3::new(100.0, 0.0, -3.0),
+                radius: 1.0,
+                color: Vector3::new(1.0, 1.0, 1.0),
+                node_index: 0,
+            },
+        ]);
+        let ray = Ray::new(Point3::origin(), Vector3::new(0.0, 0.0, -1.0));
+
+        let candidates: Vec<_> = scene
+            .bvh
+            .nearest_traverse_iterator(&ray, &scene.spheres)
+            .collect();
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].position, Point3::new(0.0, 0.0, -3.0));
     }
 
     #[test]
@@ -390,16 +483,7 @@ mod tests {
 
     #[test]
     fn render_writes_partial_tiles() {
-        let scene = RenderScene {
-            camera: Camera {
-                position: Vec3::ZERO,
-                right: Vec3::X,
-                up: Vec3::Y,
-                forward: Vec3::NEG_Z,
-            },
-            light_direction: Vec3::Z,
-            spheres: vec![test_sphere()],
-        };
+        let scene = render_scene(vec![test_sphere()]);
         let pixels = render(9, 10, &scene);
 
         assert_eq!(pixels.len(), 2 * 2 * TILE_SIZE * TILE_SIZE);
