@@ -82,12 +82,14 @@ fn shade(origin: Point3<f32>, ray_direction: Vector3<f32>, scene: &RenderScene) 
     shade_hit(origin, ray_direction, hit, scene)
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Hit {
     distance: f32,
     normal: Vector3<f32>,
     barycentrics: Vector3<f32>,
+    uv: nalgebra::Vector2<f32>,
     material_color: Vector3<f32>,
+    texture: Option<std::sync::Arc<crate::image::Texture>>,
 }
 
 fn trace_hit(origin: Point3<f32>, ray_direction: Vector3<f32>, scene: &RenderScene) -> Option<Hit> {
@@ -103,11 +105,13 @@ fn trace_hit(origin: Point3<f32>, ray_direction: Vector3<f32>, scene: &RenderSce
                 sphere.radius,
                 &scene.geometry,
             )
-            .map(|(distance, normal, barycentrics)| Hit {
+            .map(|(distance, normal, barycentrics, uv)| Hit {
                 distance,
                 normal,
                 barycentrics,
+                uv,
                 material_color: sphere.color,
+                texture: sphere.texture.clone(),
             })
         })
         .min_by(|left, right| left.distance.total_cmp(&right.distance))
@@ -125,11 +129,15 @@ fn shade_hit(
 
     let hit_point = origin + ray_direction * hit.distance;
     let view_direction = (origin - hit_point).normalize();
+    let material_color = hit
+        .texture
+        .as_ref()
+        .map_or(hit.material_color, |texture| texture.sample(hit.uv));
     phong_color(ShaderInput {
         normal: hit.normal,
         light_direction: scene.light_direction,
         view_direction,
-        material_color: hit.material_color,
+        material_color,
     })
 }
 
@@ -209,8 +217,9 @@ mod tests {
     use super::*;
     use crate::{
         geometry::generate_sphere,
-        image::row_major_pixels,
+        image::{Texture, row_major_pixels},
         scene::{Camera, DEFAULT_SCENE_PATH, Sphere, load_scene},
+        shader::{AMBIENT_STRENGTH, SPECULAR_STRENGTH},
     };
     use bvh::bvh::Bvh;
 
@@ -269,6 +278,34 @@ mod tests {
 
         assert_eq!(pixels.len(), 2 * 2 * TILE_SIZE * TILE_SIZE);
         assert!(pixels.iter().any(|pixel| *pixel != PixelData::default()));
+    }
+
+    #[test]
+    fn phong_uses_the_interpolated_texture_color() {
+        let mut scene = render_scene(vec![test_sphere()]);
+        scene.shading_mode = ShadingMode::Phong;
+
+        let color = shade_hit(
+            Point3::origin(),
+            Vector3::new(0.0, 0.0, -1.0),
+            Hit {
+                distance: 2.0,
+                normal: Vector3::new(0.0, 0.0, 1.0),
+                barycentrics: Vector3::repeat(1.0 / 3.0),
+                uv: nalgebra::Vector2::new(0.5, 0.5),
+                material_color: Vector3::new(1.0, 0.0, 0.0),
+                texture: Some(Arc::new(Texture::from_pixels(
+                    1,
+                    1,
+                    vec![Vector3::new(0.0, 1.0, 0.0)],
+                ))),
+            },
+            &scene,
+        );
+
+        assert!((color.x - SPECULAR_STRENGTH).abs() < f32::EPSILON);
+        assert!((color.y - (AMBIENT_STRENGTH + 1.0 + SPECULAR_STRENGTH)).abs() < f32::EPSILON);
+        assert!((color.z - SPECULAR_STRENGTH).abs() < f32::EPSILON);
     }
 
     fn assert_render_matches_gold(

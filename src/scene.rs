@@ -11,6 +11,7 @@ use serde::Deserialize;
 use crate::{
     cli::ShadingMode,
     geometry::{SphereGeometry, generate_sphere},
+    image::Texture,
     mlp::LoadedMlpShader,
 };
 
@@ -77,6 +78,8 @@ struct SphereDescription {
     position: [f32; 3],
     radius: f32,
     color: [f32; 3],
+    #[serde(default)]
+    texture: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug)]
@@ -92,6 +95,7 @@ pub(crate) struct Sphere {
     pub(crate) position: Point3<f32>,
     pub(crate) radius: f32,
     pub(crate) color: Vector3<f32>,
+    pub(crate) texture: Option<Arc<Texture>>,
     node_index: usize,
 }
 
@@ -101,6 +105,7 @@ impl Sphere {
             position,
             radius,
             color,
+            texture: None,
             node_index: 0,
         }
     }
@@ -170,11 +175,25 @@ pub(crate) fn load_scene(
             )
             .into());
         }
-        spheres.push(Sphere::new(
+        let mut instance = Sphere::new(
             point3_from_array(sphere.position),
             sphere.radius,
             vector3_from_array(sphere.color),
-        ));
+        );
+        instance.texture = sphere
+            .texture
+            .map(|texture_path| {
+                let resolved_path = if texture_path.is_absolute() {
+                    texture_path
+                } else {
+                    path.parent()
+                        .unwrap_or_else(|| Path::new("."))
+                        .join(texture_path)
+                };
+                Texture::load(&resolved_path).map(Arc::new)
+            })
+            .transpose()?;
+        spheres.push(instance);
     }
     let bvh = Bvh::build(&mut spheres);
     let mlp = match shading_mode {
@@ -253,5 +272,49 @@ mod tests {
         assert_eq!(scene.objects.len(), 2);
         assert_eq!(scene.geometry.latitude_segments, 4);
         assert_eq!(scene.geometry.longitude_segments, 8);
+    }
+
+    #[test]
+    fn sphere_entries_parse_individual_texture_filenames() {
+        let scene: SceneDescription = toml::from_str(
+            r#"
+            [camera]
+            position = [0.0, 0.0, 0.0]
+
+            [light]
+
+            [[objects]]
+            position = [0.0, 0.0, -3.0]
+            radius = 1.0
+            color = [1.0, 1.0, 1.0]
+            texture = "textures/first.png"
+
+            [[objects]]
+            position = [2.0, 0.0, -3.0]
+            radius = 1.0
+            color = [1.0, 1.0, 1.0]
+            texture = "textures/second.png"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            scene.objects[0].texture.as_deref(),
+            Some(Path::new("textures/first.png"))
+        );
+        assert_eq!(
+            scene.objects[1].texture.as_deref(),
+            Some(Path::new("textures/second.png"))
+        );
+    }
+
+    #[test]
+    fn scene_loads_texture_on_only_the_configured_sphere() {
+        let scene_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(DEFAULT_SCENE_PATH);
+        let scene = load_scene(&scene_path, ShadingMode::Barycentrics, None).unwrap();
+
+        assert!(scene.spheres[0].texture.is_some());
+        assert!(scene.spheres[1].texture.is_none());
+        assert!(scene.spheres[2].texture.is_none());
     }
 }

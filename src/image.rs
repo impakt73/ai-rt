@@ -1,6 +1,63 @@
 use std::{error::Error, fs::File, path::Path};
 
+use nalgebra::{Vector2, Vector3};
+
 pub(crate) const TILE_SIZE: usize = 8;
+
+#[derive(Debug)]
+pub(crate) struct Texture {
+    width: u32,
+    height: u32,
+    pixels: Vec<Vector3<f32>>,
+}
+
+impl Texture {
+    pub(crate) fn load(path: &Path) -> Result<Self, Box<dyn Error>> {
+        let image = ::image::ImageReader::open(path)?.decode()?.into_rgb8();
+        let (width, height) = image.dimensions();
+        let pixels = image
+            .pixels()
+            .map(|pixel| {
+                Vector3::new(
+                    f32::from(pixel[0]) / 255.0,
+                    f32::from(pixel[1]) / 255.0,
+                    f32::from(pixel[2]) / 255.0,
+                )
+            })
+            .collect();
+
+        Ok(Self::from_pixels(width, height, pixels))
+    }
+
+    pub(crate) fn from_pixels(width: u32, height: u32, pixels: Vec<Vector3<f32>>) -> Self {
+        assert!(width > 0 && height > 0);
+        assert_eq!(pixels.len(), (width * height) as usize);
+        Self {
+            width,
+            height,
+            pixels,
+        }
+    }
+
+    pub(crate) fn sample(&self, uv: Vector2<f32>) -> Vector3<f32> {
+        let u = uv.x.rem_euclid(1.0) * self.width as f32;
+        let v = uv.y.clamp(0.0, 1.0) * (self.height - 1) as f32;
+        let x0 = u.floor() as u32 % self.width;
+        let x1 = (x0 + 1) % self.width;
+        let y0 = v.floor() as u32;
+        let y1 = (y0 + 1).min(self.height - 1);
+        let x_fraction = u.fract();
+        let y_fraction = v.fract();
+
+        let top = self.texel(x0, y0) * (1.0 - x_fraction) + self.texel(x1, y0) * x_fraction;
+        let bottom = self.texel(x0, y1) * (1.0 - x_fraction) + self.texel(x1, y1) * x_fraction;
+        top * (1.0 - y_fraction) + bottom * y_fraction
+    }
+
+    fn texel(&self, x: u32, y: u32) -> Vector3<f32> {
+        self.pixels[(y * self.width + x) as usize]
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct PixelData {
@@ -89,6 +146,19 @@ pub(crate) fn morton_coordinates(index: usize) -> (usize, usize) {
 mod tests {
     use super::*;
 
+    fn test_texture() -> Texture {
+        Texture {
+            width: 2,
+            height: 2,
+            pixels: vec![
+                Vector3::new(1.0, 0.0, 0.0),
+                Vector3::new(0.0, 1.0, 0.0),
+                Vector3::new(0.0, 0.0, 1.0),
+                Vector3::new(1.0, 1.0, 1.0),
+            ],
+        }
+    }
+
     #[test]
     fn morton_coordinates_follow_z_order() {
         let coordinates: Vec<_> = (0..8).map(morton_coordinates).collect();
@@ -124,5 +194,19 @@ mod tests {
         assert_eq!(&pixels[(8 * 3)..(9 * 3)], &[64, 0, 0]);
         assert_eq!(&pixels[(9 * 8 * 3)..(9 * 8 * 3 + 3)], &[128, 0, 0]);
         assert_eq!(&pixels[((9 * 9 + 8) * 3)..((9 * 9 + 9) * 3)], &[194, 0, 0]);
+    }
+
+    #[test]
+    fn texture_sampling_wraps_u_and_clamps_v() {
+        let texture = test_texture();
+
+        assert_eq!(
+            texture.sample(Vector2::new(1.0, 0.0)),
+            Vector3::new(1.0, 0.0, 0.0)
+        );
+        assert_eq!(
+            texture.sample(Vector2::new(0.0, 1.0)),
+            Vector3::new(0.0, 0.0, 1.0)
+        );
     }
 }

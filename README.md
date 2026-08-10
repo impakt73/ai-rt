@@ -41,7 +41,9 @@ Specify the image dimensions and output filename with CLI arguments:
 cargo run -- --width 128 --height 96 --output render.png
 ```
 
-Select the shading mode explicitly when rendering:
+Select the shading mode explicitly when rendering. Phong uses each object's
+optional `texture` filename as the diffuse color, sampled from UVs generated
+for each sphere triangle; without a texture it uses the object's RGB color:
 
 ```sh
 cargo run -- --shading-mode barycentrics
@@ -56,8 +58,13 @@ cargo run -- --scene examples/scene.toml --output render.png
 ```
 
 Scene files contain `[camera]`, `[light]`, and `[geometry]` sections, along
-with any number of `[[objects]]` sphere entries. Positions and colors are
-XYZ/RGB arrays; camera and light `yaw`, `pitch`, and `roll` values are degrees.
+with any number of `[[objects]]` sphere entries. Each object can optionally
+specify a unique `texture` path. Positions and colors are XYZ/RGB arrays;
+camera and light `yaw`, `pitch`, and `roll` values are degrees. Relative
+texture paths are resolved from the scene file's directory. The checked-in
+template assigns the procedurally generated
+`textures/procedural_diffuse.png` texture to its first sphere.
+
 `geometry.latitude_segments` and `geometry.longitude_segments` control the
 triangle density of the one unit sphere mesh that is shared by all objects.
 See `scene.toml` for a complete example.

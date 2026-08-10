@@ -1,11 +1,12 @@
 use std::io;
 
-use nalgebra::{Point3, Vector3};
+use nalgebra::{Point3, Vector2, Vector3};
 
 #[derive(Debug)]
 pub(crate) struct Triangle {
     pub(crate) vertices: [Point3<f32>; 3],
     pub(crate) vertex_normals: [Vector3<f32>; 3],
+    pub(crate) uvs: [Vector2<f32>; 3],
 }
 
 #[derive(Debug)]
@@ -33,14 +34,23 @@ pub(crate) fn generate_sphere(
     let point_on_sphere = |latitude: usize, longitude: usize| {
         let theta = std::f32::consts::PI * latitude as f32 / latitude_segments as f32;
         let phi = 2.0 * std::f32::consts::PI * longitude as f32 / longitude_segments as f32;
-        Point3::new(
-            theta.sin() * phi.cos(),
-            theta.cos(),
-            theta.sin() * phi.sin(),
+        (
+            Point3::new(
+                theta.sin() * phi.cos(),
+                theta.cos(),
+                theta.sin() * phi.sin(),
+            ),
+            Vector2::new(
+                longitude as f32 / longitude_segments as f32,
+                latitude as f32 / latitude_segments as f32,
+            ),
         )
     };
-    let triangle = |a: Point3<f32>, b: Point3<f32>, c: Point3<f32>| {
-        let mut vertices = [a, b, c];
+    let triangle = |a: (Point3<f32>, Vector2<f32>),
+                    b: (Point3<f32>, Vector2<f32>),
+                    c: (Point3<f32>, Vector2<f32>)| {
+        let mut vertices = [a.0, b.0, c.0];
+        let mut uvs = [a.1, b.1, c.1];
         let mut vertex_normals = vertices.map(|vertex| vertex.coords.normalize());
         let normal = (vertices[1] - vertices[0])
             .cross(&(vertices[2] - vertices[0]))
@@ -48,15 +58,15 @@ pub(crate) fn generate_sphere(
         if normal.dot(&(vertices[0].coords + vertices[1].coords + vertices[2].coords)) < 0.0 {
             vertices.swap(1, 2);
             vertex_normals.swap(1, 2);
+            uvs.swap(1, 2);
         }
         Triangle {
             vertices,
             vertex_normals,
+            uvs,
         }
     };
 
-    let north_pole = Point3::new(0.0, 1.0, 0.0);
-    let south_pole = Point3::new(0.0, -1.0, 0.0);
     let triangle_count = longitude_segments
         .checked_mul(latitude_segments - 1)
         .and_then(|count| count.checked_mul(2))
@@ -69,9 +79,11 @@ pub(crate) fn generate_sphere(
     let mut triangles = Vec::with_capacity(triangle_count);
 
     for longitude in 0..longitude_segments {
-        let next_longitude = (longitude + 1) % longitude_segments;
+        // Keep the final sector's next longitude at one full turn so its UVs
+        // interpolate toward u=1 instead of wrapping back to u=0.
+        let next_longitude = longitude + 1;
         triangles.push(triangle(
-            north_pole,
+            point_on_sphere(0, longitude),
             point_on_sphere(1, longitude),
             point_on_sphere(1, next_longitude),
         ));
@@ -87,7 +99,7 @@ pub(crate) fn generate_sphere(
 
         triangles.push(triangle(
             point_on_sphere(latitude_segments - 1, longitude),
-            south_pole,
+            point_on_sphere(latitude_segments, longitude),
             point_on_sphere(latitude_segments - 1, next_longitude),
         ));
     }
@@ -101,7 +113,7 @@ pub(crate) fn ray_mesh_intersection(
     sphere_position: Point3<f32>,
     sphere_radius: f32,
     geometry: &SphereGeometry,
-) -> Option<(f32, Vector3<f32>, Vector3<f32>)> {
+) -> Option<(f32, Vector3<f32>, Vector3<f32>, Vector2<f32>)> {
     let local_origin = Point3::from((origin - sphere_position) / sphere_radius);
     let local_direction = direction / sphere_radius;
 
@@ -115,7 +127,10 @@ pub(crate) fn ray_mesh_intersection(
                         + triangle.vertex_normals[1] * barycentrics.y
                         + triangle.vertex_normals[2] * barycentrics.z)
                         .normalize();
-                    (distance, normal, barycentrics)
+                    let uv = triangle.uvs[0] * barycentrics.x
+                        + triangle.uvs[1] * barycentrics.y
+                        + triangle.uvs[2] * barycentrics.z;
+                    (distance, normal, barycentrics, uv)
                 },
             )
         })
@@ -217,6 +232,7 @@ mod tests {
                 Point3::new(0.0, 1.0, -2.0),
             ],
             vertex_normals: [Vector3::new(0.0, 0.0, 1.0); 3],
+            uvs: [Vector2::zeros(); 3],
         };
 
         assert_eq!(
@@ -235,6 +251,11 @@ mod tests {
                 Point3::new(0.0, 1.0, -2.0),
             ],
             vertex_normals: [Vector3::new(0.0, 0.0, 1.0); 3],
+            uvs: [
+                Vector2::new(0.0, 0.0),
+                Vector2::new(1.0, 0.0),
+                Vector2::new(0.0, 1.0),
+            ],
         };
 
         let (_, barycentrics) = ray_triangle_intersection(
@@ -247,5 +268,56 @@ mod tests {
         assert!((barycentrics.x - 1.0 / 3.0).abs() < f32::EPSILON);
         assert!((barycentrics.y - 1.0 / 3.0).abs() < f32::EPSILON);
         assert!((barycentrics.z - 1.0 / 3.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn mesh_intersection_interpolates_uvs_with_barycentrics() {
+        let triangle = Triangle {
+            vertices: [
+                Point3::new(-1.0, -1.0, -2.0),
+                Point3::new(1.0, -1.0, -2.0),
+                Point3::new(0.0, 1.0, -2.0),
+            ],
+            vertex_normals: [Vector3::new(0.0, 0.0, 1.0); 3],
+            uvs: [
+                Vector2::new(0.0, 0.0),
+                Vector2::new(1.0, 0.0),
+                Vector2::new(0.0, 1.0),
+            ],
+        };
+        let geometry = SphereGeometry {
+            triangles: vec![triangle],
+        };
+
+        let (_, _, barycentrics, uv) = ray_mesh_intersection(
+            Point3::origin(),
+            Vector3::new(0.0, 0.0, -1.0),
+            Point3::origin(),
+            1.0,
+            &geometry,
+        )
+        .unwrap();
+
+        assert!((barycentrics - Vector3::new(0.25, 0.25, 0.5)).norm() < f32::EPSILON);
+        assert!((uv - Vector2::new(0.25, 0.5)).norm() < f32::EPSILON);
+    }
+
+    #[test]
+    fn sphere_uvs_cover_the_longitude_seam_without_wrapping() {
+        let geometry = generate_sphere(2, 4).unwrap();
+        let seam_triangle = &geometry.triangles[6];
+
+        assert!(
+            seam_triangle
+                .uvs
+                .iter()
+                .all(|uv| (0.0..=1.0).contains(&uv.x))
+        );
+        assert!(
+            seam_triangle
+                .uvs
+                .iter()
+                .any(|uv| (uv.x - 1.0).abs() < f32::EPSILON)
+        );
     }
 }
