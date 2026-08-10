@@ -5,7 +5,7 @@ use nalgebra::{Point3, Vector3};
 #[derive(Debug)]
 pub(crate) struct Triangle {
     pub(crate) vertices: [Point3<f32>; 3],
-    pub(crate) normal: Vector3<f32>,
+    pub(crate) vertex_normals: [Vector3<f32>; 3],
 }
 
 #[derive(Debug)]
@@ -41,14 +41,18 @@ pub(crate) fn generate_sphere(
     };
     let triangle = |a: Point3<f32>, b: Point3<f32>, c: Point3<f32>| {
         let mut vertices = [a, b, c];
-        let mut normal = (vertices[1] - vertices[0])
+        let mut vertex_normals = vertices.map(|vertex| vertex.coords.normalize());
+        let normal = (vertices[1] - vertices[0])
             .cross(&(vertices[2] - vertices[0]))
             .normalize();
         if normal.dot(&(vertices[0].coords + vertices[1].coords + vertices[2].coords)) < 0.0 {
             vertices.swap(1, 2);
-            normal = -normal;
+            vertex_normals.swap(1, 2);
         }
-        Triangle { vertices, normal }
+        Triangle {
+            vertices,
+            vertex_normals,
+        }
     };
 
     let north_pole = Point3::new(0.0, 1.0, 0.0);
@@ -105,8 +109,15 @@ pub(crate) fn ray_mesh_intersection(
         .triangles
         .iter()
         .filter_map(|triangle| {
-            ray_triangle_intersection(local_origin, local_direction, triangle)
-                .map(|(distance, barycentrics)| (distance, triangle.normal, barycentrics))
+            ray_triangle_intersection(local_origin, local_direction, triangle).map(
+                |(distance, barycentrics)| {
+                    let normal = (triangle.vertex_normals[0] * barycentrics.x
+                        + triangle.vertex_normals[1] * barycentrics.y
+                        + triangle.vertex_normals[2] * barycentrics.z)
+                        .normalize();
+                    (distance, normal, barycentrics)
+                },
+            )
         })
         .min_by(|left, right| left.0.total_cmp(&right.0))
 }
@@ -187,6 +198,17 @@ mod tests {
     }
 
     #[test]
+    fn sphere_triangles_have_smooth_vertex_normals() {
+        let geometry = generate_sphere(4, 8).unwrap();
+        let triangle = &geometry.triangles[1];
+
+        assert_ne!(triangle.vertex_normals[0], triangle.vertex_normals[1]);
+        for (vertex, normal) in triangle.vertices.iter().zip(triangle.vertex_normals) {
+            assert!((vertex.coords.normalize() - normal).norm() < f32::EPSILON);
+        }
+    }
+
+    #[test]
     fn ray_triangle_intersection_hits_front_face() {
         let triangle = Triangle {
             vertices: [
@@ -194,7 +216,7 @@ mod tests {
                 Point3::new(1.0, -1.0, -2.0),
                 Point3::new(0.0, 1.0, -2.0),
             ],
-            normal: Vector3::new(0.0, 0.0, 1.0),
+            vertex_normals: [Vector3::new(0.0, 0.0, 1.0); 3],
         };
 
         assert_eq!(
@@ -212,7 +234,7 @@ mod tests {
                 Point3::new(1.0, -1.0, -2.0),
                 Point3::new(0.0, 1.0, -2.0),
             ],
-            normal: Vector3::new(0.0, 0.0, 1.0),
+            vertex_normals: [Vector3::new(0.0, 0.0, 1.0); 3],
         };
 
         let (_, barycentrics) = ray_triangle_intersection(
