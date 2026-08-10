@@ -6,7 +6,8 @@ the compiler and automated tests as the renderer grows.
 
 ## Current Status
 
-The binary generates a solid red PNG image. By default, it writes a `64x64`
+The binary ray traces a red sphere with a hardcoded directional light and a
+simple Phong shader. The background is black. By default, it writes a `64x64`
 image to `output.png`.
 
 ## Development Direction
