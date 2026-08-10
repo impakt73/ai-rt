@@ -720,6 +720,46 @@ mod tests {
         assert!(pixels.iter().any(|pixel| *pixel != PixelData::default()));
     }
 
+    fn assert_render_matches_gold(
+        name: &str,
+        width: u32,
+        height: u32,
+        pixels: &[PixelData],
+        gold: &[u8],
+    ) {
+        const MINIMUM_SIMILARITY: f64 = 0.999;
+
+        let rendered =
+            image::RgbImage::from_raw(width, height, row_major_pixels(width, height, pixels))
+                .expect("rendered image dimensions should match its pixel buffer");
+        let expected = image::load_from_memory(gold)
+            .expect("gold image should be a valid image")
+            .into_rgb8();
+        let similarity = image_compare::rgb_hybrid_compare(&rendered, &expected)
+            .expect("rendered and gold images should have identical dimensions");
+
+        assert!(
+            similarity.score >= MINIMUM_SIMILARITY,
+            "rendered image {name} differs from its gold image (similarity: {:.6}, expected at least {MINIMUM_SIMILARITY:.6})",
+            similarity.score,
+        );
+    }
+
+    #[test]
+    fn render_matches_gold_image() {
+        let scene_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(DEFAULT_SCENE_PATH);
+        let scene = load_scene(&scene_path, ShadingMode::Barycentrics).unwrap();
+        let pixels = render(32, 32, &scene);
+
+        assert_render_matches_gold(
+            "default_scene_barycentrics",
+            32,
+            32,
+            &pixels,
+            include_bytes!("../tests/gold/default_scene_barycentrics.png"),
+        );
+    }
+
     #[test]
     fn row_major_pixels_unshuffles_morton_tiles() {
         let tile_pixels: Vec<_> = (0..4)

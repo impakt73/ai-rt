@@ -11,3 +11,7 @@ png = "0.17"
 rayon = "1.10"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+
+[dev-dependencies]
+image = "0.25"
+image-compare = "0.5"
