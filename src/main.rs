@@ -6,7 +6,7 @@ mod render;
 mod scene;
 mod shader;
 
-use std::{error::Error, io, path::PathBuf};
+use std::{error::Error, io, path::PathBuf, time::Instant};
 
 use clap::Parser;
 
@@ -33,15 +33,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         .checked_mul(args.height as usize)
         .and_then(|pixel_count| pixel_count.checked_mul(3))
         .ok_or_else(|| io::Error::other("image dimensions are too large"))?;
+    let render_start = Instant::now();
     let pixels = render(args.width, args.height, &scene);
+    let render_time_us = render_start.elapsed().as_micros();
     write_png(&args.output, args.width, args.height, &pixels)?;
 
     println!(
-        "Wrote {}x{} ray-traced PNG to {} using scene {}",
+        "Wrote {}x{} ray-traced PNG to {} using scene {} (rendering took {} microseconds)",
         args.width,
         args.height,
         args.output.display(),
-        scene_path.display()
+        scene_path.display(),
+        render_time_us
     );
 
     Ok(())
