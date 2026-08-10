@@ -6,7 +6,7 @@ use bvh::{
     bvh::Bvh,
     ray::Ray,
 };
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -19,7 +19,7 @@ const HALF_FOV_TANGENT: f32 = 0.41421357;
 const TILE_SIZE: usize = 8;
 
 #[derive(Debug, Parser)]
-#[command(author, version, about = "Render a Phong-shaded sphere scene")]
+#[command(author, version, about = "Render a sphere scene")]
 struct Args {
     /// Image width in pixels.
     #[arg(long, default_value_t = 64)]
@@ -36,6 +36,16 @@ struct Args {
     /// TOML scene description. Defaults to scene.toml.
     #[arg(short, long)]
     scene: Option<PathBuf>,
+
+    /// Shading mode used for visible triangle hits.
+    #[arg(long, value_enum, default_value_t = ShadingMode::Barycentrics)]
+    shading_mode: ShadingMode,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum ShadingMode {
+    Barycentrics,
+    Phong,
 }
 
 #[derive(Debug, Deserialize)]
@@ -152,6 +162,7 @@ struct RenderScene {
     geometry: Arc<SphereGeometry>,
     spheres: Vec<Sphere>,
     bvh: Bvh<f32, 3>,
+    shading_mode: ShadingMode,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -192,7 +203,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let scene_path = args
         .scene
         .unwrap_or_else(|| PathBuf::from(DEFAULT_SCENE_PATH));
-    let scene = load_scene(&scene_path)?;
+    let scene = load_scene(&scene_path, args.shading_mode)?;
     (args.width as usize)
         .checked_mul(args.height as usize)
         .and_then(|pixel_count| pixel_count.checked_mul(3))
@@ -211,7 +222,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn load_scene(path: &PathBuf) -> Result<RenderScene, Box<dyn Error>> {
+fn load_scene(path: &PathBuf, shading_mode: ShadingMode) -> Result<RenderScene, Box<dyn Error>> {
     let contents = std::fs::read_to_string(path)?;
     let description: Scene = toml::from_str(&contents)?;
     let camera_rotation = rotation_from_degrees(
@@ -259,6 +270,7 @@ fn load_scene(path: &PathBuf) -> Result<RenderScene, Box<dyn Error>> {
         geometry,
         spheres,
         bvh,
+        shading_mode,
     })
 }
 
@@ -457,17 +469,21 @@ fn morton_coordinates(index: usize) -> (usize, usize) {
 
 fn shade(origin: Point3<f32>, ray_direction: Vector3<f32>, scene: &RenderScene) -> Vector3<f32> {
     let ray = Ray::new(origin, ray_direction);
-    let Some((distance, normal, sphere)) = scene
+    let Some((distance, normal, barycentrics, sphere)) = scene
         .bvh
         .nearest_traverse_iterator(&ray, &scene.spheres)
         .filter_map(|sphere| {
             ray_mesh_intersection(origin, ray_direction, sphere, &scene.geometry)
-                .map(|(distance, normal)| (distance, normal, sphere))
+                .map(|(distance, normal, barycentrics)| (distance, normal, barycentrics, sphere))
         })
         .min_by(|left, right| left.0.total_cmp(&right.0))
     else {
         return Vector3::zeros();
     };
+
+    if scene.shading_mode == ShadingMode::Barycentrics {
+        return barycentrics;
+    }
 
     let hit_point = origin + ray_direction * distance;
     let diffuse = normal.dot(&scene.light_direction).max(0.0);
@@ -487,7 +503,7 @@ fn ray_mesh_intersection(
     direction: Vector3<f32>,
     sphere: &Sphere,
     geometry: &SphereGeometry,
-) -> Option<(f32, Vector3<f32>)> {
+) -> Option<(f32, Vector3<f32>, Vector3<f32>)> {
     let local_origin = Point3::from((origin - sphere.position) / sphere.radius);
     let local_direction = direction / sphere.radius;
 
@@ -496,7 +512,7 @@ fn ray_mesh_intersection(
         .iter()
         .filter_map(|triangle| {
             ray_triangle_intersection(local_origin, local_direction, triangle)
-                .map(|distance| (distance, triangle.normal))
+                .map(|(distance, barycentrics)| (distance, triangle.normal, barycentrics))
         })
         .min_by(|left, right| left.0.total_cmp(&right.0))
 }
@@ -505,7 +521,7 @@ fn ray_triangle_intersection(
     origin: Point3<f32>,
     direction: Vector3<f32>,
     triangle: &Triangle,
-) -> Option<f32> {
+) -> Option<(f32, Vector3<f32>)> {
     const PARALLEL_EPSILON: f32 = 1.0e-7;
 
     let edge1 = triangle.vertices[1] - triangle.vertices[0];
@@ -530,7 +546,7 @@ fn ray_triangle_intersection(
     }
 
     let distance = edge2.dot(&qvec) * inverse_determinant;
-    (distance >= 0.0).then_some(distance)
+    (distance >= 0.0).then_some((distance, Vector3::new(1.0 - u - v, u, v)))
 }
 
 fn point3_from_array(value: [f32; 3]) -> Point3<f32> {
@@ -572,6 +588,7 @@ mod tests {
             geometry: Arc::new(generate_sphere(16, 32).unwrap()),
             spheres,
             bvh,
+            shading_mode: ShadingMode::Barycentrics,
         }
     }
 
@@ -624,9 +641,33 @@ mod tests {
         };
 
         assert_eq!(
-            ray_triangle_intersection(Point3::origin(), Vector3::new(0.0, 0.0, -1.0), &triangle,),
+            ray_triangle_intersection(Point3::origin(), Vector3::new(0.0, 0.0, -1.0), &triangle,)
+                .map(|(distance, _)| distance),
             Some(2.0)
         );
+    }
+
+    #[test]
+    fn ray_triangle_intersection_returns_barycentrics() {
+        let triangle = Triangle {
+            vertices: [
+                Point3::new(-1.0, -1.0, -2.0),
+                Point3::new(1.0, -1.0, -2.0),
+                Point3::new(0.0, 1.0, -2.0),
+            ],
+            normal: Vector3::new(0.0, 0.0, 1.0),
+        };
+
+        let (_, barycentrics) = ray_triangle_intersection(
+            Point3::new(0.0, -1.0 / 3.0, 0.0),
+            Vector3::new(0.0, 0.0, -1.0),
+            &triangle,
+        )
+        .unwrap();
+
+        assert!((barycentrics.x - 1.0 / 3.0).abs() < f32::EPSILON);
+        assert!((barycentrics.y - 1.0 / 3.0).abs() < f32::EPSILON);
+        assert!((barycentrics.z - 1.0 / 3.0).abs() < f32::EPSILON);
     }
 
     #[test]

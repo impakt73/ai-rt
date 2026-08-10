@@ -6,10 +6,12 @@ the compiler and automated tests as the renderer grows.
 
 ## Current Status
 
-The binary ray traces scenes described in TOML with a simple Phong shader. The
-background is black, pixels are ray traced in parallel with Rayon in 8x8 tiles,
-and the checked-in `scene.toml` template contains three spheres. By default,
-the program loads `scene.toml` and writes a `64x64` image to `output.png`.
+The binary ray traces scenes described in TOML. The default barycentric shading
+mode visualizes triangle coordinates as RGB colors; Phong shading remains
+available with `--shading-mode phong`. The background is black, pixels are ray
+traced in parallel with Rayon in 8x8 tiles, and the checked-in `scene.toml`
+template contains three spheres. By default, the program loads `scene.toml`
+and writes a `64x64` image to `output.png`.
 
 ## Development Direction
 
@@ -36,6 +38,13 @@ Specify the image dimensions and output filename with CLI arguments:
 
 ```sh
 cargo run -- --width 128 --height 96 --output render.png
+```
+
+Select the shading mode explicitly when rendering:
+
+```sh
+cargo run -- --shading-mode barycentrics
+cargo run -- --shading-mode phong
 ```
 
 Use a different scene description with `--scene`:
