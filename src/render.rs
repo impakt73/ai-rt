@@ -6,7 +6,7 @@ use crate::{
     cli::ShadingMode,
     geometry::ray_mesh_intersection,
     image::{PixelData, TILE_SIZE, morton_coordinates},
-    scene::RenderScene,
+    scene::{Material, RenderScene},
     shader::{ShaderInput, phong_color},
 };
 
@@ -88,9 +88,7 @@ struct Hit {
     normal: Vector3<f32>,
     barycentrics: Vector3<f32>,
     uv: nalgebra::Vector2<f32>,
-    material_color: Vector3<f32>,
-    texture: Option<std::sync::Arc<crate::image::Texture>>,
-    texture_repeat: nalgebra::Vector2<f32>,
+    material: std::sync::Arc<Material>,
 }
 
 fn trace_hit(origin: Point3<f32>, ray_direction: Vector3<f32>, scene: &RenderScene) -> Option<Hit> {
@@ -111,9 +109,7 @@ fn trace_hit(origin: Point3<f32>, ray_direction: Vector3<f32>, scene: &RenderSce
                 normal,
                 barycentrics,
                 uv,
-                material_color: sphere.color,
-                texture: sphere.texture.clone(),
-                texture_repeat: sphere.texture_repeat,
+                material: sphere.material.clone(),
             })
         })
         .min_by(|left, right| left.distance.total_cmp(&right.distance))
@@ -131,9 +127,13 @@ fn shade_hit(
 
     let hit_point = origin + ray_direction * hit.distance;
     let view_direction = (origin - hit_point).normalize();
-    let material_color = hit.texture.as_ref().map_or(hit.material_color, |texture| {
-        texture.sample(hit.uv.component_mul(&hit.texture_repeat))
-    });
+    let material_color = hit
+        .material
+        .texture
+        .as_ref()
+        .map_or(hit.material.color, |texture| {
+            texture.sample(hit.uv.component_mul(&hit.material.uv_scale))
+        });
     phong_color(ShaderInput {
         normal: hit.normal,
         light_direction: scene.light_direction,
@@ -190,7 +190,7 @@ fn render_mlp_tile(
             normal: hit.normal,
             light_direction: scene.light_direction,
             view_direction: (origin - hit_point).normalize(),
-            material_color: hit.material_color,
+            material_color: hit.material.color,
         };
         features.extend(input.feature_row());
         destinations.push(morton_index);
@@ -219,7 +219,7 @@ mod tests {
     use crate::{
         geometry::generate_sphere,
         image::{Texture, row_major_pixels},
-        scene::{Camera, DEFAULT_SCENE_PATH, Sphere, load_scene},
+        scene::{Camera, DEFAULT_SCENE_PATH, Material, Sphere, load_scene},
         shader::{AMBIENT_STRENGTH, SPECULAR_STRENGTH},
     };
     use bvh::bvh::Bvh;
@@ -228,7 +228,11 @@ mod tests {
         Sphere::new(
             Point3::new(0.0, 0.0, -3.0),
             1.0,
-            Vector3::new(1.0, 1.0, 1.0),
+            Arc::new(Material {
+                color: Vector3::new(1.0, 1.0, 1.0),
+                texture: None,
+                uv_scale: nalgebra::Vector2::repeat(1.0),
+            }),
         )
     }
 
@@ -258,7 +262,11 @@ mod tests {
             Sphere::new(
                 Point3::new(100.0, 0.0, -3.0),
                 1.0,
-                Vector3::new(1.0, 1.0, 1.0),
+                Arc::new(Material {
+                    color: Vector3::new(1.0, 1.0, 1.0),
+                    texture: None,
+                    uv_scale: nalgebra::Vector2::repeat(1.0),
+                }),
             ),
         ]);
         let ray = Ray::new(Point3::origin(), Vector3::new(0.0, 0.0, -1.0));
@@ -294,13 +302,15 @@ mod tests {
                 normal: Vector3::new(0.0, 0.0, 1.0),
                 barycentrics: Vector3::repeat(1.0 / 3.0),
                 uv: nalgebra::Vector2::new(0.5, 0.5),
-                material_color: Vector3::new(1.0, 0.0, 0.0),
-                texture: Some(Arc::new(Texture::from_pixels(
-                    1,
-                    1,
-                    vec![Vector3::new(0.0, 1.0, 0.0)],
-                ))),
-                texture_repeat: nalgebra::Vector2::repeat(1.0),
+                material: Arc::new(Material {
+                    color: Vector3::new(1.0, 0.0, 0.0),
+                    texture: Some(Arc::new(Texture::from_pixels(
+                        1,
+                        1,
+                        vec![Vector3::new(0.0, 1.0, 0.0)],
+                    ))),
+                    uv_scale: nalgebra::Vector2::repeat(1.0),
+                }),
             },
             &scene,
         );

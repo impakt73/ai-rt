@@ -1,4 +1,4 @@
-use std::{error::Error, io, path::Path, sync::Arc};
+use std::{collections::HashMap, error::Error, io, path::Path, sync::Arc};
 
 use bvh::{
     aabb::{Aabb, Bounded},
@@ -23,6 +23,8 @@ struct SceneDescription {
     light: LightDescription,
     #[serde(default)]
     geometry: GeometryDescription,
+    #[serde(default)]
+    materials: HashMap<String, MaterialDescription>,
     #[serde(default)]
     objects: Vec<SphereDescription>,
 }
@@ -74,18 +76,24 @@ fn default_longitude_segments() -> usize {
 }
 
 #[derive(Debug, Deserialize)]
-struct SphereDescription {
-    position: [f32; 3],
-    radius: f32,
+struct MaterialDescription {
     color: [f32; 3],
     #[serde(default)]
     texture: Option<std::path::PathBuf>,
-    #[serde(default = "default_texture_repeat")]
-    texture_repeat: [f32; 2],
+    #[serde(default = "default_uv_scale")]
+    uv_scale: [f32; 2],
 }
 
-fn default_texture_repeat() -> [f32; 2] {
+fn default_uv_scale() -> [f32; 2] {
     [1.0, 1.0]
+}
+
+#[derive(Debug, Deserialize)]
+struct SphereDescription {
+    position: [f32; 3],
+    radius: f32,
+    #[serde(default)]
+    material: Option<String>,
 }
 
 #[derive(Debug)]
@@ -100,23 +108,26 @@ pub(crate) struct Camera {
 pub(crate) struct Sphere {
     pub(crate) position: Point3<f32>,
     pub(crate) radius: f32,
-    pub(crate) color: Vector3<f32>,
-    pub(crate) texture: Option<Arc<Texture>>,
-    pub(crate) texture_repeat: Vector2<f32>,
+    pub(crate) material: Arc<Material>,
     node_index: usize,
 }
 
 impl Sphere {
-    pub(crate) fn new(position: Point3<f32>, radius: f32, color: Vector3<f32>) -> Self {
+    pub(crate) fn new(position: Point3<f32>, radius: f32, material: Arc<Material>) -> Self {
         Self {
             position,
             radius,
-            color,
-            texture: None,
-            texture_repeat: Vector2::repeat(1.0),
+            material,
             node_index: 0,
         }
     }
+}
+
+#[derive(Debug)]
+pub(crate) struct Material {
+    pub(crate) color: Vector3<f32>,
+    pub(crate) texture: Option<Arc<Texture>>,
+    pub(crate) uv_scale: Vector2<f32>,
 }
 
 impl Bounded<f32, 3> for Sphere {
@@ -174,6 +185,7 @@ pub(crate) fn load_scene(
         description.geometry.latitude_segments,
         description.geometry.longitude_segments,
     )?);
+    let materials = load_materials(description.materials, path)?;
     let mut spheres = Vec::with_capacity(description.objects.len());
     for sphere in description.objects {
         if !sphere.radius.is_finite() || sphere.radius <= 0.0 {
@@ -183,37 +195,12 @@ pub(crate) fn load_scene(
             )
             .into());
         }
-        let mut instance = Sphere::new(
+        let material = select_material(sphere.material.as_deref(), &materials)?;
+        spheres.push(Sphere::new(
             point3_from_array(sphere.position),
             sphere.radius,
-            vector3_from_array(sphere.color),
-        );
-        if sphere
-            .texture_repeat
-            .iter()
-            .any(|repeat| !repeat.is_finite() || *repeat <= 0.0)
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "sphere texture repeat values must be finite and greater than zero",
-            )
-            .into());
-        }
-        instance.texture_repeat = Vector2::from(sphere.texture_repeat);
-        instance.texture = sphere
-            .texture
-            .map(|texture_path| {
-                let resolved_path = if texture_path.is_absolute() {
-                    texture_path
-                } else {
-                    path.parent()
-                        .unwrap_or_else(|| Path::new("."))
-                        .join(texture_path)
-                };
-                Texture::load(&resolved_path).map(Arc::new)
-            })
-            .transpose()?;
-        spheres.push(instance);
+            material,
+        ));
     }
     let bvh = Bvh::build(&mut spheres);
     let mlp = match shading_mode {
@@ -236,6 +223,91 @@ pub(crate) fn load_scene(
         bvh,
         shading_mode,
         mlp,
+    })
+}
+
+fn load_materials(
+    descriptions: HashMap<String, MaterialDescription>,
+    scene_path: &Path,
+) -> Result<HashMap<String, Arc<Material>>, Box<dyn Error>> {
+    descriptions
+        .into_iter()
+        .map(|(name, material)| {
+            if material
+                .color
+                .iter()
+                .any(|component| !component.is_finite())
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("material {name:?} color values must be finite"),
+                )
+                .into());
+            }
+            if material
+                .uv_scale
+                .iter()
+                .any(|scale| !scale.is_finite() || *scale <= 0.0)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "material {name:?} uv scale values must be finite and greater than zero"
+                    ),
+                )
+                .into());
+            }
+
+            let texture = material
+                .texture
+                .map(|texture_path| {
+                    let resolved_path = if texture_path.is_absolute() {
+                        texture_path
+                    } else {
+                        scene_path
+                            .parent()
+                            .unwrap_or_else(|| Path::new("."))
+                            .join(texture_path)
+                    };
+                    Texture::load(&resolved_path).map(Arc::new)
+                })
+                .transpose()?;
+
+            Ok((
+                name,
+                Arc::new(Material {
+                    color: vector3_from_array(material.color),
+                    texture,
+                    uv_scale: Vector2::from(material.uv_scale),
+                }),
+            ))
+        })
+        .collect()
+}
+
+fn select_material(
+    requested_name: Option<&str>,
+    materials: &HashMap<String, Arc<Material>>,
+) -> Result<Arc<Material>, Box<dyn Error>> {
+    let name = if let Some(name) = requested_name {
+        name
+    } else if materials.contains_key("default") {
+        "default"
+    } else if materials.len() == 1 {
+        materials.keys().next().unwrap().as_str()
+    } else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "object must specify a material when the scene has no unique default material",
+        )
+        .into());
+    };
+    materials.get(name).cloned().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("object references unknown material {name:?}"),
+        )
+        .into()
     })
 }
 
@@ -276,15 +348,21 @@ mod tests {
             latitude_segments = 4
             longitude_segments = 8
 
+            [materials.red]
+            color = [1.0, 0.0, 0.0]
+
+            [materials.green]
+            color = [0.0, 1.0, 0.0]
+
             [[objects]]
             position = [0.0, 0.0, -3.0]
             radius = 1.0
-            color = [1.0, 0.0, 0.0]
+            material = "red"
 
             [[objects]]
             position = [2.0, 0.0, -4.0]
             radius = 0.5
-            color = [0.0, 1.0, 0.0]
+            material = "green"
             "#,
         )
         .unwrap();
@@ -295,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn sphere_entries_parse_individual_texture_filenames() {
+    fn materials_parse_texture_and_uv_scale_properties() {
         let scene: SceneDescription = toml::from_str(
             r#"
             [camera]
@@ -303,31 +381,38 @@ mod tests {
 
             [light]
 
+            [materials.first]
+            color = [1.0, 1.0, 1.0]
+            texture = "textures/first.png"
+            uv_scale = [2.0, 3.0]
+
+            [materials.second]
+            color = [0.5, 0.5, 0.5]
+            texture = "textures/second.png"
+
             [[objects]]
             position = [0.0, 0.0, -3.0]
             radius = 1.0
-            color = [1.0, 1.0, 1.0]
-            texture = "textures/first.png"
-            texture_repeat = [2.0, 3.0]
+            material = "first"
 
             [[objects]]
             position = [2.0, 0.0, -3.0]
             radius = 1.0
-            color = [1.0, 1.0, 1.0]
-            texture = "textures/second.png"
+            material = "second"
             "#,
         )
         .unwrap();
 
         assert_eq!(
-            scene.objects[0].texture.as_deref(),
-            Some(Path::new("textures/first.png"))
+            scene.materials["first"].texture.as_deref(),
+            Some(Path::new("textures/first.png")),
         );
         assert_eq!(
-            scene.objects[1].texture.as_deref(),
-            Some(Path::new("textures/second.png"))
+            scene.materials["second"].texture.as_deref(),
+            Some(Path::new("textures/second.png")),
         );
-        assert_eq!(scene.objects[0].texture_repeat, [2.0, 3.0]);
+        assert_eq!(scene.materials["first"].uv_scale, [2.0, 3.0]);
+        assert_eq!(scene.objects[0].material.as_deref(), Some("first"));
     }
 
     #[test]
@@ -335,8 +420,32 @@ mod tests {
         let scene_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(DEFAULT_SCENE_PATH);
         let scene = load_scene(&scene_path, ShadingMode::Barycentrics, None).unwrap();
 
-        assert!(scene.spheres[0].texture.is_some());
-        assert!(scene.spheres[1].texture.is_none());
-        assert!(scene.spheres[2].texture.is_none());
+        assert!(scene.spheres[0].material.texture.is_some());
+        assert!(scene.spheres[1].material.texture.is_none());
+        assert!(scene.spheres[2].material.texture.is_none());
+    }
+
+    #[test]
+    fn objects_without_material_use_the_default_material() {
+        let scene: SceneDescription = toml::from_str(
+            r#"
+            [camera]
+            position = [0.0, 0.0, 0.0]
+
+            [light]
+
+            [materials.default]
+            color = [1.0, 0.0, 0.0]
+
+            [[objects]]
+            position = [0.0, 0.0, -3.0]
+            radius = 1.0
+            "#,
+        )
+        .unwrap();
+
+        let materials = load_materials(scene.materials, Path::new("scene.toml")).unwrap();
+        let selected = select_material(scene.objects[0].material.as_deref(), &materials).unwrap();
+        assert_eq!(selected.color, Vector3::new(1.0, 0.0, 0.0));
     }
 }

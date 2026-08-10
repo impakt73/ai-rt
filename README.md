@@ -41,10 +41,11 @@ Specify the image dimensions and output filename with CLI arguments:
 cargo run -- --width 128 --height 96 --output render.png
 ```
 
-Select the shading mode explicitly when rendering. Phong uses each object's
-optional `texture` filename as the diffuse color, sampled from UVs generated
-for each sphere triangle. Set `texture_repeat = [u, v]` on an object to tile
-the map across the sphere; without a texture it uses the object's RGB color:
+Select the shading mode explicitly when rendering. Phong uses the selected
+material's optional `texture` filename as the diffuse color, sampled from UVs
+generated for each sphere triangle. Set a material's `uv_scale = [u, v]` to
+tile the map across the sphere; without a texture it uses the material's RGB
+color:
 
 ```sh
 cargo run -- --shading-mode barycentrics
@@ -58,14 +59,18 @@ Use a different scene description with `--scene`:
 cargo run -- --scene examples/scene.toml --output render.png
 ```
 
-Scene files contain `[camera]`, `[light]`, and `[geometry]` sections, along
-with any number of `[[objects]]` sphere entries. Each object can optionally
-specify a unique `texture` path and optional `texture_repeat = [u, v]` values.
+Scene files contain `[camera]`, `[light]`, `[geometry]`, and `[materials.*]`
+sections, along with any number of `[[objects]]` sphere entries. Materials own
+their RGB `color`, optional `texture` path, and optional `uv_scale = [u, v]`.
+Each object specifies a material by name with `material = "name"`.
+If an object omits that field, the material named `default` is selected, or the
+only material is selected when the scene defines exactly one material.
 Positions and colors are XYZ/RGB arrays;
 camera and light `yaw`, `pitch`, and `roll` values are degrees. Relative
 texture paths are resolved from the scene file's directory. The checked-in
 template assigns the procedurally generated
-`textures/procedural_diffuse.png` texture to its first sphere.
+`textures/procedural_diffuse.png` texture to the `red_textured` material used
+by its first sphere.
 
 `geometry.latitude_segments` and `geometry.longitude_segments` control the
 triangle density of the one unit sphere mesh that is shared by all objects.
