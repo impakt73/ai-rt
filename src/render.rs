@@ -90,6 +90,7 @@ struct Hit {
     uv: nalgebra::Vector2<f32>,
     material_color: Vector3<f32>,
     texture: Option<std::sync::Arc<crate::image::Texture>>,
+    texture_repeat: nalgebra::Vector2<f32>,
 }
 
 fn trace_hit(origin: Point3<f32>, ray_direction: Vector3<f32>, scene: &RenderScene) -> Option<Hit> {
@@ -112,6 +113,7 @@ fn trace_hit(origin: Point3<f32>, ray_direction: Vector3<f32>, scene: &RenderSce
                 uv,
                 material_color: sphere.color,
                 texture: sphere.texture.clone(),
+                texture_repeat: sphere.texture_repeat,
             })
         })
         .min_by(|left, right| left.distance.total_cmp(&right.distance))
@@ -129,10 +131,9 @@ fn shade_hit(
 
     let hit_point = origin + ray_direction * hit.distance;
     let view_direction = (origin - hit_point).normalize();
-    let material_color = hit
-        .texture
-        .as_ref()
-        .map_or(hit.material_color, |texture| texture.sample(hit.uv));
+    let material_color = hit.texture.as_ref().map_or(hit.material_color, |texture| {
+        texture.sample(hit.uv.component_mul(&hit.texture_repeat))
+    });
     phong_color(ShaderInput {
         normal: hit.normal,
         light_direction: scene.light_direction,
@@ -299,6 +300,7 @@ mod tests {
                     1,
                     vec![Vector3::new(0.0, 1.0, 0.0)],
                 ))),
+                texture_repeat: nalgebra::Vector2::repeat(1.0),
             },
             &scene,
         );

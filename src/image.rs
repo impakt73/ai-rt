@@ -41,11 +41,11 @@ impl Texture {
 
     pub(crate) fn sample(&self, uv: Vector2<f32>) -> Vector3<f32> {
         let u = uv.x.rem_euclid(1.0) * self.width as f32;
-        let v = uv.y.clamp(0.0, 1.0) * (self.height - 1) as f32;
+        let v = uv.y.rem_euclid(1.0) * self.height as f32;
         let x0 = u.floor() as u32 % self.width;
         let x1 = (x0 + 1) % self.width;
-        let y0 = v.floor() as u32;
-        let y1 = (y0 + 1).min(self.height - 1);
+        let y0 = v.floor() as u32 % self.height;
+        let y1 = (y0 + 1) % self.height;
         let x_fraction = u.fract();
         let y_fraction = v.fract();
 
@@ -197,7 +197,7 @@ mod tests {
     }
 
     #[test]
-    fn texture_sampling_wraps_u_and_clamps_v() {
+    fn texture_sampling_wraps_both_axes() {
         let texture = test_texture();
 
         assert_eq!(
@@ -206,7 +206,7 @@ mod tests {
         );
         assert_eq!(
             texture.sample(Vector2::new(0.0, 1.0)),
-            Vector3::new(0.0, 0.0, 1.0)
+            Vector3::new(1.0, 0.0, 0.0)
         );
     }
 }

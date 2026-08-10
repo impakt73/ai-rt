@@ -5,7 +5,7 @@ use bvh::{
     bounding_hierarchy::BHShape,
     bvh::Bvh,
 };
-use nalgebra::{Point3, UnitQuaternion, Vector3};
+use nalgebra::{Point3, UnitQuaternion, Vector2, Vector3};
 use serde::Deserialize;
 
 use crate::{
@@ -80,6 +80,12 @@ struct SphereDescription {
     color: [f32; 3],
     #[serde(default)]
     texture: Option<std::path::PathBuf>,
+    #[serde(default = "default_texture_repeat")]
+    texture_repeat: [f32; 2],
+}
+
+fn default_texture_repeat() -> [f32; 2] {
+    [1.0, 1.0]
 }
 
 #[derive(Debug)]
@@ -96,6 +102,7 @@ pub(crate) struct Sphere {
     pub(crate) radius: f32,
     pub(crate) color: Vector3<f32>,
     pub(crate) texture: Option<Arc<Texture>>,
+    pub(crate) texture_repeat: Vector2<f32>,
     node_index: usize,
 }
 
@@ -106,6 +113,7 @@ impl Sphere {
             radius,
             color,
             texture: None,
+            texture_repeat: Vector2::repeat(1.0),
             node_index: 0,
         }
     }
@@ -180,6 +188,18 @@ pub(crate) fn load_scene(
             sphere.radius,
             vector3_from_array(sphere.color),
         );
+        if sphere
+            .texture_repeat
+            .iter()
+            .any(|repeat| !repeat.is_finite() || *repeat <= 0.0)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "sphere texture repeat values must be finite and greater than zero",
+            )
+            .into());
+        }
+        instance.texture_repeat = Vector2::from(sphere.texture_repeat);
         instance.texture = sphere
             .texture
             .map(|texture_path| {
@@ -288,6 +308,7 @@ mod tests {
             radius = 1.0
             color = [1.0, 1.0, 1.0]
             texture = "textures/first.png"
+            texture_repeat = [2.0, 3.0]
 
             [[objects]]
             position = [2.0, 0.0, -3.0]
@@ -306,6 +327,7 @@ mod tests {
             scene.objects[1].texture.as_deref(),
             Some(Path::new("textures/second.png"))
         );
+        assert_eq!(scene.objects[0].texture_repeat, [2.0, 3.0]);
     }
 
     #[test]
