@@ -1,5 +1,6 @@
 #[path = "../mlp.rs"]
 mod mlp;
+#[allow(dead_code)]
 #[path = "../shader.rs"]
 mod shader;
 
@@ -149,7 +150,7 @@ fn make_batch(rng: &mut ChaCha8Rng, batch_size: usize) -> (Vec<f32>, Vec<f32>) {
             normal: random_unit_vector(rng),
             light_direction: random_unit_vector(rng),
             view_direction: random_unit_vector(rng),
-            material_color: Vector3::new(rng.random(), rng.random(), rng.random()),
+            albedo: Vector3::new(rng.random(), rng.random(), rng.random()),
         };
         features.extend(input.feature_row());
         let target = phong_color(input);

@@ -21,16 +21,22 @@ latitude_segments = 32
 longitude_segments = 64
 
 [materials.red_textured]
-color = [1.0, 0.0, 0.0]
+albedo = [1.0, 0.0, 0.0]
 texture = "textures/procedural_diffuse.png"
 # Repeat the small map across the sphere instead of stretching it once.
 uv_scale = [8.0, 8.0]
+roughness = 0.5
+metalness = 0.0
 
 [materials.blue]
-color = [0.0, 0.7, 1.0]
+albedo = [0.0, 0.7, 1.0]
+roughness = 0.5
+metalness = 0.0
 
 [materials.gold]
-color = [0.95, 0.75, 0.1]
+albedo = [0.95, 0.75, 0.1]
+roughness = 0.28
+metalness = 1.0
 
 [[objects]]
 position = [0.0, 0.0, -3.0]

@@ -77,15 +77,27 @@ fn default_longitude_segments() -> usize {
 
 #[derive(Debug, Deserialize)]
 struct MaterialDescription {
-    color: [f32; 3],
+    albedo: [f32; 3],
     #[serde(default)]
     texture: Option<std::path::PathBuf>,
     #[serde(default = "default_uv_scale")]
     uv_scale: [f32; 2],
+    #[serde(default = "default_roughness")]
+    roughness: f32,
+    #[serde(default = "default_metalness")]
+    metalness: f32,
 }
 
 fn default_uv_scale() -> [f32; 2] {
     [1.0, 1.0]
+}
+
+fn default_roughness() -> f32 {
+    0.5
+}
+
+fn default_metalness() -> f32 {
+    0.0
 }
 
 #[derive(Debug, Deserialize)]
@@ -125,9 +137,11 @@ impl Sphere {
 
 #[derive(Debug)]
 pub(crate) struct Material {
-    pub(crate) color: Vector3<f32>,
+    pub(crate) albedo: Vector3<f32>,
     pub(crate) texture: Option<Arc<Texture>>,
     pub(crate) uv_scale: Vector2<f32>,
+    pub(crate) roughness: f32,
+    pub(crate) metalness: f32,
 }
 
 impl Bounded<f32, 3> for Sphere {
@@ -234,13 +248,13 @@ fn load_materials(
         .into_iter()
         .map(|(name, material)| {
             if material
-                .color
+                .albedo
                 .iter()
                 .any(|component| !component.is_finite())
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("material {name:?} color values must be finite"),
+                    format!("material {name:?} albedo values must be finite"),
                 )
                 .into());
             }
@@ -254,6 +268,20 @@ fn load_materials(
                     format!(
                         "material {name:?} uv scale values must be finite and greater than zero"
                     ),
+                )
+                .into());
+            }
+            if !material.roughness.is_finite() || !(0.0..=1.0).contains(&material.roughness) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("material {name:?} roughness must be finite and between zero and one"),
+                )
+                .into());
+            }
+            if !material.metalness.is_finite() || !(0.0..=1.0).contains(&material.metalness) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("material {name:?} metalness must be finite and between zero and one"),
                 )
                 .into());
             }
@@ -276,9 +304,11 @@ fn load_materials(
             Ok((
                 name,
                 Arc::new(Material {
-                    color: vector3_from_array(material.color),
+                    albedo: vector3_from_array(material.albedo),
                     texture,
                     uv_scale: Vector2::from(material.uv_scale),
+                    roughness: material.roughness,
+                    metalness: material.metalness,
                 }),
             ))
         })
@@ -349,10 +379,10 @@ mod tests {
             longitude_segments = 8
 
             [materials.red]
-            color = [1.0, 0.0, 0.0]
+            albedo = [1.0, 0.0, 0.0]
 
             [materials.green]
-            color = [0.0, 1.0, 0.0]
+            albedo = [0.0, 1.0, 0.0]
 
             [[objects]]
             position = [0.0, 0.0, -3.0]
@@ -382,12 +412,12 @@ mod tests {
             [light]
 
             [materials.first]
-            color = [1.0, 1.0, 1.0]
+            albedo = [1.0, 1.0, 1.0]
             texture = "textures/first.png"
             uv_scale = [2.0, 3.0]
 
             [materials.second]
-            color = [0.5, 0.5, 0.5]
+            albedo = [0.5, 0.5, 0.5]
             texture = "textures/second.png"
 
             [[objects]]
@@ -416,6 +446,37 @@ mod tests {
     }
 
     #[test]
+    fn materials_parse_pbr_properties_and_default_them() {
+        let scene: SceneDescription = toml::from_str(
+            r#"
+            [camera]
+            position = [0.0, 0.0, 0.0]
+
+            [light]
+
+            [materials.metal]
+            albedo = [0.8, 0.6, 0.2]
+            roughness = 0.25
+            metalness = 0.75
+
+            [materials.plastic]
+            albedo = [0.2, 0.4, 0.8]
+
+            [[objects]]
+            position = [0.0, 0.0, -3.0]
+            radius = 1.0
+            material = "metal"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(scene.materials["metal"].roughness, 0.25);
+        assert_eq!(scene.materials["metal"].metalness, 0.75);
+        assert_eq!(scene.materials["plastic"].roughness, 0.5);
+        assert_eq!(scene.materials["plastic"].metalness, 0.0);
+    }
+
+    #[test]
     fn scene_loads_texture_on_only_the_configured_sphere() {
         let scene_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(DEFAULT_SCENE_PATH);
         let scene = load_scene(&scene_path, ShadingMode::Barycentrics, None).unwrap();
@@ -435,7 +496,7 @@ mod tests {
             [light]
 
             [materials.default]
-            color = [1.0, 0.0, 0.0]
+            albedo = [1.0, 0.0, 0.0]
 
             [[objects]]
             position = [0.0, 0.0, -3.0]
@@ -446,6 +507,6 @@ mod tests {
 
         let materials = load_materials(scene.materials, Path::new("scene.toml")).unwrap();
         let selected = select_material(scene.objects[0].material.as_deref(), &materials).unwrap();
-        assert_eq!(selected.color, Vector3::new(1.0, 0.0, 0.0));
+        assert_eq!(selected.albedo, Vector3::new(1.0, 0.0, 0.0));
     }
 }

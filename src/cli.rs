@@ -34,5 +34,6 @@ pub(crate) struct Args {
 pub(crate) enum ShadingMode {
     Barycentrics,
     Phong,
+    Pbr,
     Mlp,
 }

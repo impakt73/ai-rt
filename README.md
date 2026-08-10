@@ -8,8 +8,9 @@ the compiler and automated tests as the renderer grows.
 
 The binary ray traces scenes described in TOML. The default barycentric shading
 mode visualizes triangle coordinates as RGB colors; Phong shading remains
-available with `--shading-mode phong`, and Burn MLP shading is available with
-`--shading-mode mlp`. The background is black, pixels are ray
+available with `--shading-mode phong`, PBR shading is available with
+`--shading-mode pbr`, and Burn MLP shading is available with `--shading-mode mlp`.
+The background is black, pixels are ray
 traced in parallel with Rayon in 8x8 tiles, and the checked-in `scene.toml`
 template contains three spheres. By default, the program loads `scene.toml`
 and writes a `64x64` image to `output.png`.
@@ -50,6 +51,7 @@ color:
 ```sh
 cargo run -- --shading-mode barycentrics
 cargo run -- --shading-mode phong
+cargo run -- --shading-mode pbr
 cargo run -- --shading-mode mlp --shader-model models/phong_mlp_v1/model
 ```
 
@@ -61,8 +63,12 @@ cargo run -- --scene examples/scene.toml --output render.png
 
 Scene files contain `[camera]`, `[light]`, `[geometry]`, and `[materials.*]`
 sections, along with any number of `[[objects]]` sphere entries. Materials own
-their RGB `color`, optional `texture` path, and optional `uv_scale = [u, v]`.
-Each object specifies a material by name with `material = "name"`.
+their RGB `albedo`, optional `texture` path, optional `uv_scale = [u, v]`, and
+PBR `roughness` and `metalness` scalar inputs. Roughness and metalness default
+to `0.5` and `0.0`, respectively, and are currently constants for a material;
+they can be expanded to texture maps later. PBR uses Burley diffuse and
+Cook-Torrance GGX specular. Each object specifies a material by name with
+`material = "name"`.
 If an object omits that field, the material named `default` is selected, or the
 only material is selected when the scene defines exactly one material.
 Positions and colors are XYZ/RGB arrays;
