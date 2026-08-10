@@ -7,9 +7,9 @@ the compiler and automated tests as the renderer grows.
 ## Current Status
 
 The binary ray traces scenes described in TOML with a simple Phong shader. The
-background is black, each pixel is ray traced in parallel with Rayon, and the
-checked-in `scene.toml` template contains three spheres. By default, the
-program loads `scene.toml` and writes a `64x64` image to `output.png`.
+background is black, pixels are ray traced in parallel with Rayon in 8x8 tiles,
+and the checked-in `scene.toml` template contains three spheres. By default,
+the program loads `scene.toml` and writes a `64x64` image to `output.png`.
 
 ## Development Direction
 

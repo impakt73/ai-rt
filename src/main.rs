@@ -10,6 +10,7 @@ const AMBIENT_STRENGTH: f32 = 0.08;
 const SPECULAR_STRENGTH: f32 = 0.35;
 const SPECULAR_SHININESS: f32 = 32.0;
 const HALF_FOV_TANGENT: f32 = 0.41421357;
+const TILE_SIZE: usize = 8;
 
 #[derive(Debug, Parser)]
 #[command(author, version, about = "Render a Phong-shaded sphere scene")]
@@ -176,28 +177,70 @@ fn rotation_from_degrees(yaw: f32, pitch: f32, roll: f32) -> Quat {
 
 fn render(width: u32, height: u32, byte_count: usize, scene: &RenderScene) -> Vec<u8> {
     let aspect_ratio = width as f32 / height as f32;
-    let pixel_count = byte_count / 3;
+    let width = width as usize;
+    let height = height as usize;
+    let tiles_x = width.div_ceil(TILE_SIZE);
+    let tiles_y = height.div_ceil(TILE_SIZE);
 
-    (0..pixel_count)
+    let tiles: Vec<Vec<(usize, usize, [u8; 3])>> = (0..tiles_x * tiles_y)
         .into_par_iter()
-        .flat_map_iter(|index| {
-            let x = index % width as usize;
-            let y = index / width as usize;
-            let screen_x =
-                ((x as f32 + 0.5) / width as f32 * 2.0 - 1.0) * aspect_ratio * HALF_FOV_TANGENT;
-            let screen_y = (1.0 - (y as f32 + 0.5) / height as f32 * 2.0) * HALF_FOV_TANGENT;
-            let ray_direction =
-                (scene.camera.forward + scene.camera.right * screen_x + scene.camera.up * screen_y)
-                    .normalize();
-            let color = shade(scene.camera.position, ray_direction, scene);
+        .map(|tile_index| {
+            let tile_x = tile_index % tiles_x;
+            let tile_y = tile_index / tiles_x;
+            let tile_start_x = tile_x * TILE_SIZE;
+            let tile_start_y = tile_y * TILE_SIZE;
+            let mut tile_pixels = Vec::with_capacity(TILE_SIZE * TILE_SIZE);
 
-            [
-                (color.x.clamp(0.0, 1.0) * 255.0) as u8,
-                (color.y.clamp(0.0, 1.0) * 255.0) as u8,
-                (color.z.clamp(0.0, 1.0) * 255.0) as u8,
-            ]
+            for local_y in 0..TILE_SIZE {
+                let y = tile_start_y + local_y;
+                if y >= height {
+                    continue;
+                }
+
+                for local_x in 0..TILE_SIZE {
+                    let x = tile_start_x + local_x;
+                    if x >= width {
+                        continue;
+                    }
+
+                    let screen_x = ((x as f32 + 0.5) / width as f32 * 2.0 - 1.0)
+                        * aspect_ratio
+                        * HALF_FOV_TANGENT;
+                    let screen_y =
+                        (1.0 - (y as f32 + 0.5) / height as f32 * 2.0) * HALF_FOV_TANGENT;
+                    let ray_direction = (scene.camera.forward
+                        + scene.camera.right * screen_x
+                        + scene.camera.up * screen_y)
+                        .normalize();
+                    let color = shade(scene.camera.position, ray_direction, scene);
+
+                    tile_pixels.push((
+                        x,
+                        y,
+                        [
+                            (color.x.clamp(0.0, 1.0) * 255.0) as u8,
+                            (color.y.clamp(0.0, 1.0) * 255.0) as u8,
+                            (color.z.clamp(0.0, 1.0) * 255.0) as u8,
+                        ],
+                    ));
+                }
+            }
+
+            tile_pixels
         })
-        .collect()
+        .collect();
+
+    // Tiles are collected in tile order, not image row order. Copy each valid
+    // pixel into its final location after the parallel work is complete.
+    let mut pixels = vec![0; byte_count];
+    for tile in tiles {
+        for (x, y, color) in tile {
+            let offset = (y * width + x) * 3;
+            pixels[offset..offset + 3].copy_from_slice(&color);
+        }
+    }
+
+    pixels
 }
 
 fn shade(origin: Vec3, ray_direction: Vec3, scene: &RenderScene) -> Vec3 {
