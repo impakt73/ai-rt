@@ -7,11 +7,9 @@ use crate::{
     geometry::ray_mesh_intersection,
     image::{PixelData, TILE_SIZE, morton_coordinates},
     scene::RenderScene,
+    shader::{ShaderInput, phong_color},
 };
 
-const AMBIENT_STRENGTH: f32 = 0.08;
-const SPECULAR_STRENGTH: f32 = 0.35;
-const SPECULAR_SHININESS: f32 = 32.0;
 const HALF_FOV_TANGENT: f32 = 0.41421357;
 
 pub(crate) fn render(width: u32, height: u32, scene: &RenderScene) -> Vec<PixelData> {
@@ -40,7 +38,22 @@ pub(crate) fn render(width: u32, height: u32, scene: &RenderScene) -> Vec<PixelD
                     continue;
                 }
 
+                if scene.shading_mode == ShadingMode::Mlp {
+                    continue;
+                }
                 *tile_pixel = render_pixel(x, y, width, height, aspect_ratio, scene);
+            }
+
+            if scene.shading_mode == ShadingMode::Mlp {
+                render_mlp_tile(
+                    tile_start_x,
+                    tile_start_y,
+                    width,
+                    height,
+                    aspect_ratio,
+                    tile_pixels,
+                    scene,
+                );
             }
         });
 
@@ -55,19 +68,31 @@ fn render_pixel(
     aspect_ratio: f32,
     scene: &RenderScene,
 ) -> PixelData {
-    let screen_x = ((x as f32 + 0.5) / width as f32 * 2.0 - 1.0) * aspect_ratio * HALF_FOV_TANGENT;
-    let screen_y = (1.0 - (y as f32 + 0.5) / height as f32 * 2.0) * HALF_FOV_TANGENT;
-    let ray_direction =
-        (scene.camera.forward + scene.camera.right * screen_x + scene.camera.up * screen_y)
-            .normalize();
+    let ray_direction = ray_direction(x, y, width, height, aspect_ratio, scene);
     let color = shade(scene.camera.position, ray_direction, scene);
 
     PixelData::from_color(color)
 }
 
 fn shade(origin: Point3<f32>, ray_direction: Vector3<f32>, scene: &RenderScene) -> Vector3<f32> {
+    let Some(hit) = trace_hit(origin, ray_direction, scene) else {
+        return Vector3::zeros();
+    };
+
+    shade_hit(origin, ray_direction, hit, scene)
+}
+
+#[derive(Clone, Copy)]
+struct Hit {
+    distance: f32,
+    normal: Vector3<f32>,
+    barycentrics: Vector3<f32>,
+    material_color: Vector3<f32>,
+}
+
+fn trace_hit(origin: Point3<f32>, ray_direction: Vector3<f32>, scene: &RenderScene) -> Option<Hit> {
     let ray = Ray::new(origin, ray_direction);
-    let Some((distance, normal, barycentrics, sphere)) = scene
+    scene
         .bvh
         .nearest_traverse_iterator(&ray, &scene.spheres)
         .filter_map(|sphere| {
@@ -78,32 +103,103 @@ fn shade(origin: Point3<f32>, ray_direction: Vector3<f32>, scene: &RenderScene) 
                 sphere.radius,
                 &scene.geometry,
             )
-            .map(|(distance, normal, barycentrics)| (distance, normal, barycentrics, sphere))
+            .map(|(distance, normal, barycentrics)| Hit {
+                distance,
+                normal,
+                barycentrics,
+                material_color: sphere.color,
+            })
         })
-        .min_by(|left, right| left.0.total_cmp(&right.0))
-    else {
-        return Vector3::zeros();
-    };
-
-    if scene.shading_mode == ShadingMode::Barycentrics {
-        return barycentrics;
-    }
-
-    let hit_point = origin + ray_direction * distance;
-    let diffuse = normal.dot(&scene.light_direction).max(0.0);
-    let view_direction = (origin - hit_point).normalize();
-    let reflected_direction = reflect(-scene.light_direction, normal);
-    let specular = reflected_direction
-        .dot(&view_direction)
-        .max(0.0)
-        .powf(SPECULAR_SHININESS)
-        * SPECULAR_STRENGTH;
-
-    sphere.color * (AMBIENT_STRENGTH + diffuse) + Vector3::repeat(specular)
+        .min_by(|left, right| left.distance.total_cmp(&right.distance))
 }
 
-fn reflect(vector: Vector3<f32>, normal: Vector3<f32>) -> Vector3<f32> {
-    vector - normal * (2.0 * vector.dot(&normal))
+fn shade_hit(
+    origin: Point3<f32>,
+    ray_direction: Vector3<f32>,
+    hit: Hit,
+    scene: &RenderScene,
+) -> Vector3<f32> {
+    if scene.shading_mode == ShadingMode::Barycentrics {
+        return hit.barycentrics;
+    }
+
+    let hit_point = origin + ray_direction * hit.distance;
+    let view_direction = (origin - hit_point).normalize();
+    phong_color(ShaderInput {
+        normal: hit.normal,
+        light_direction: scene.light_direction,
+        view_direction,
+        material_color: hit.material_color,
+    })
+}
+
+fn ray_direction(
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    aspect_ratio: f32,
+    scene: &RenderScene,
+) -> Vector3<f32> {
+    let screen_x = ((x as f32 + 0.5) / width as f32 * 2.0 - 1.0) * aspect_ratio * HALF_FOV_TANGENT;
+    let screen_y = (1.0 - (y as f32 + 0.5) / height as f32 * 2.0) * HALF_FOV_TANGENT;
+    (scene.camera.forward + scene.camera.right * screen_x + scene.camera.up * screen_y).normalize()
+}
+
+fn render_mlp_tile(
+    tile_start_x: usize,
+    tile_start_y: usize,
+    width: usize,
+    height: usize,
+    aspect_ratio: f32,
+    tile_pixels: &mut [PixelData],
+    scene: &RenderScene,
+) {
+    let mlp = scene
+        .mlp
+        .as_ref()
+        .expect("MLP shading requires a loaded model");
+    let mut features = Vec::new();
+    let mut destinations = Vec::new();
+    let origin = scene.camera.position;
+
+    for (morton_index, tile_pixel) in tile_pixels.iter_mut().enumerate() {
+        let (local_x, local_y) = morton_coordinates(morton_index);
+        let x = tile_start_x + local_x;
+        let y = tile_start_y + local_y;
+        if x >= width || y >= height {
+            continue;
+        }
+
+        let direction = ray_direction(x, y, width, height, aspect_ratio, scene);
+        let Some(hit) = trace_hit(origin, direction, scene) else {
+            *tile_pixel = PixelData::default();
+            continue;
+        };
+        let hit_point = origin + direction * hit.distance;
+        let input = ShaderInput {
+            normal: hit.normal,
+            light_direction: scene.light_direction,
+            view_direction: (origin - hit_point).normalize(),
+            material_color: hit.material_color,
+        };
+        features.extend(input.feature_row());
+        destinations.push(morton_index);
+    }
+
+    if destinations.is_empty() {
+        return;
+    }
+
+    let predictions = mlp.infer(&features, destinations.len());
+    for (row, destination) in destinations.into_iter().enumerate() {
+        let offset = row * 3;
+        tile_pixels[destination] = PixelData::from_color(Vector3::new(
+            predictions[offset],
+            predictions[offset + 1],
+            predictions[offset + 2],
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -141,6 +237,7 @@ mod tests {
             spheres,
             bvh,
             shading_mode: ShadingMode::Barycentrics,
+            mlp: None,
         }
     }
 
@@ -203,7 +300,7 @@ mod tests {
     fn render_matches_gold_image() {
         let scene_path =
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(DEFAULT_SCENE_PATH);
-        let scene = load_scene(&scene_path, ShadingMode::Barycentrics).unwrap();
+        let scene = load_scene(&scene_path, ShadingMode::Barycentrics, None).unwrap();
         let pixels = render(32, 32, &scene);
 
         assert_render_matches_gold(

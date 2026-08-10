@@ -1,8 +1,10 @@
 mod cli;
 mod geometry;
 mod image;
+mod mlp;
 mod render;
 mod scene;
+mod shader;
 
 use std::{error::Error, io, path::PathBuf};
 
@@ -26,7 +28,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let scene_path = args
         .scene
         .unwrap_or_else(|| PathBuf::from(DEFAULT_SCENE_PATH));
-    let scene = load_scene(&scene_path, args.shading_mode)?;
+    let scene = load_scene(&scene_path, args.shading_mode, args.shader_model.as_deref())?;
     (args.width as usize)
         .checked_mul(args.height as usize)
         .and_then(|pixel_count| pixel_count.checked_mul(3))

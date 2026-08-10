@@ -11,6 +11,7 @@ use serde::Deserialize;
 use crate::{
     cli::ShadingMode,
     geometry::{SphereGeometry, generate_sphere},
+    mlp::LoadedMlpShader,
 };
 
 pub(crate) const DEFAULT_SCENE_PATH: &str = "scene.toml";
@@ -122,7 +123,6 @@ impl BHShape<f32, 3> for Sphere {
     }
 }
 
-#[derive(Debug)]
 pub(crate) struct RenderScene {
     pub(crate) camera: Camera,
     pub(crate) light_direction: Vector3<f32>,
@@ -130,11 +130,13 @@ pub(crate) struct RenderScene {
     pub(crate) spheres: Vec<Sphere>,
     pub(crate) bvh: Bvh<f32, 3>,
     pub(crate) shading_mode: ShadingMode,
+    pub(crate) mlp: Option<Arc<LoadedMlpShader>>,
 }
 
 pub(crate) fn load_scene(
     path: &Path,
     shading_mode: ShadingMode,
+    shader_model: Option<&Path>,
 ) -> Result<RenderScene, Box<dyn Error>> {
     let contents = std::fs::read_to_string(path)?;
     let description: SceneDescription = toml::from_str(&contents)?;
@@ -175,6 +177,17 @@ pub(crate) fn load_scene(
         ));
     }
     let bvh = Bvh::build(&mut spheres);
+    let mlp = match shading_mode {
+        ShadingMode::Mlp => Some(Arc::new(LoadedMlpShader::load(shader_model.ok_or_else(
+            || {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "MLP shading requires --shader-model",
+                )
+            },
+        )?)?)),
+        _ => None,
+    };
 
     Ok(RenderScene {
         camera,
@@ -183,6 +196,7 @@ pub(crate) fn load_scene(
         spheres,
         bvh,
         shading_mode,
+        mlp,
     })
 }
 

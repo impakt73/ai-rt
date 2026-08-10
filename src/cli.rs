@@ -24,10 +24,15 @@ pub(crate) struct Args {
     /// Shading mode used for visible triangle hits.
     #[arg(long, value_enum, default_value_t = ShadingMode::Barycentrics)]
     pub(crate) shading_mode: ShadingMode,
+
+    /// Burn MLP checkpoint base path, required by MLP shading.
+    #[arg(long)]
+    pub(crate) shader_model: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub(crate) enum ShadingMode {
     Barycentrics,
     Phong,
+    Mlp,
 }
