@@ -1,0 +1,30 @@
+# Default scene template for ai-rt.
+# Camera and light angles are in degrees. Camera faces -Z at zero rotation.
+# The light direction points from a surface toward the light and faces +Z at
+# zero rotation.
+
+[camera]
+position = [0.0, 0.0, 0.0]
+yaw = 0.0
+pitch = 0.0
+roll = 0.0
+
+[light]
+yaw = -25.0
+pitch = -35.0
+roll = 0.0
+
+[[objects]]
+position = [0.0, 0.0, -3.0]
+radius = 1.0
+color = [1.0, 0.0, 0.0]
+
+[[objects]]
+position = [-1.5, -0.25, -4.0]
+radius = 0.65
+color = [0.0, 0.7, 1.0]
+
+[[objects]]
+position = [1.35, 0.35, -4.5]
+radius = 0.85
+color = [0.95, 0.75, 0.1]

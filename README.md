@@ -6,9 +6,10 @@ the compiler and automated tests as the renderer grows.
 
 ## Current Status
 
-The binary ray traces a red sphere with a hardcoded directional light and a
-simple Phong shader. The background is black, and each pixel is ray traced in
-parallel with Rayon. By default, it writes a `64x64` image to `output.png`.
+The binary ray traces scenes described in TOML with a simple Phong shader. The
+background is black, each pixel is ray traced in parallel with Rayon, and the
+checked-in `scene.toml` template contains three spheres. By default, the
+program loads `scene.toml` and writes a `64x64` image to `output.png`.
 
 ## Development Direction
 
@@ -36,6 +37,17 @@ Specify the image dimensions and output filename with CLI arguments:
 ```sh
 cargo run -- --width 128 --height 96 --output render.png
 ```
+
+Use a different scene description with `--scene`:
+
+```sh
+cargo run -- --scene examples/scene.toml --output render.png
+```
+
+Scene files contain a `[camera]` section, a `[light]` section, and any number
+of `[[objects]]` sphere entries. Positions and colors are XYZ/RGB arrays;
+camera and light `yaw`, `pitch`, and `roll` values are degrees. See
+`scene.toml` for a complete example.
 
 Show all available options with:
 
