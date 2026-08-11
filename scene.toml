@@ -26,6 +26,7 @@ albedo = { texture = "textures/default_albedo.png" }
 uv_scale = [8.0, 8.0]
 roughness = { texture = "textures/default_roughness.png" }
 metalness = { texture = "textures/default_metalness.png" }
+normal_map = { texture = "textures/default_normal.png" }
 latent = { texture = "models/pbr_mlp_v1/latents/material_0.latent" }
 
 [materials.constant]

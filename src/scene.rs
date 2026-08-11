@@ -80,6 +80,8 @@ fn default_longitude_segments() -> usize {
 struct MaterialDescription {
     albedo: MaterialPropertyDescription<[f32; 3]>,
     #[serde(default)]
+    normal_map: Option<MaterialPropertyDescription<[f32; 3]>>,
+    #[serde(default)]
     latent: Option<LatentTextureDescription>,
     #[serde(default = "default_uv_scale")]
     uv_scale: [f32; 2],
@@ -154,6 +156,7 @@ impl Sphere {
 pub(crate) struct Material {
     pub(crate) name: String,
     pub(crate) albedo: MaterialProperty<Vector3<f32>>,
+    pub(crate) normal_map: Option<MaterialProperty<Vector3<f32>>>,
     pub(crate) uv_scale: Vector2<f32>,
     pub(crate) roughness: MaterialProperty<f32>,
     pub(crate) metalness: MaterialProperty<f32>,
@@ -348,21 +351,17 @@ fn load_materials(
             validate_scalar_property(&material.roughness, &name, "roughness")?;
             validate_scalar_property(&material.metalness, &name, "metalness")?;
             let latent = load_latent_texture(material.latent, scene_path)?;
+            let normal_map = material
+                .normal_map
+                .map(|property| load_vector_property(property, scene_path))
+                .transpose()?;
 
             Ok((
                 name.clone(),
                 Arc::new(Material {
                     name: name.clone(),
-                    albedo: load_property(material.albedo, scene_path).map(|property| {
-                        match property {
-                            MaterialProperty::Constant(value) => {
-                                MaterialProperty::Constant(vector3_from_array(value))
-                            }
-                            MaterialProperty::Texture(texture) => {
-                                MaterialProperty::Texture(texture)
-                            }
-                        }
-                    })?,
+                    albedo: load_vector_property(material.albedo, scene_path)?,
+                    normal_map,
                     uv_scale: Vector2::from(material.uv_scale),
                     roughness: load_property(material.roughness, scene_path)?,
                     metalness: load_property(material.metalness, scene_path)?,
@@ -371,6 +370,16 @@ fn load_materials(
             ))
         })
         .collect()
+}
+
+fn load_vector_property(
+    property: MaterialPropertyDescription<[f32; 3]>,
+    scene_path: &Path,
+) -> Result<MaterialProperty<Vector3<f32>>, Box<dyn Error>> {
+    load_property(property, scene_path).map(|property| match property {
+        MaterialProperty::Constant(value) => MaterialProperty::Constant(vector3_from_array(value)),
+        MaterialProperty::Texture(texture) => MaterialProperty::Texture(texture),
+    })
 }
 
 fn load_latent_texture(
@@ -534,6 +543,7 @@ mod tests {
 
             [materials.first]
             albedo = { constant = [1.0, 1.0, 1.0] }
+            normal_map = { texture = "textures/normal.png" }
             latent = { texture = "latents/first.latent" }
             uv_scale = [2.0, 3.0]
             roughness = { texture = "textures/roughness.png" }
@@ -558,6 +568,11 @@ mod tests {
         assert!(matches!(
             &scene.materials["first"].albedo,
             MaterialPropertyDescription::NamedConstant { .. }
+        ));
+        assert!(matches!(
+            &scene.materials["first"].normal_map,
+            Some(MaterialPropertyDescription::Texture { texture })
+                if texture == Path::new("textures/normal.png")
         ));
         assert!(matches!(
             &scene.materials["first"].roughness,
@@ -645,6 +660,10 @@ mod tests {
         assert!(matches!(
             &scene.spheres[0].material.metalness,
             MaterialProperty::Texture(_)
+        ));
+        assert!(matches!(
+            &scene.spheres[0].material.normal_map,
+            Some(MaterialProperty::Texture(_))
         ));
         assert_eq!(
             scene.spheres[0]

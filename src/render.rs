@@ -6,7 +6,7 @@ use crate::{
     cli::ShadingMode,
     geometry::ray_mesh_intersection,
     image::{PixelData, TILE_SIZE, morton_coordinates},
-    scene::{Material, RenderScene},
+    scene::{Material, MaterialProperty, RenderScene},
     shader::{MlpInput, PbrInput, ShaderInput, pbr_color, phong_color},
 };
 
@@ -137,7 +137,7 @@ fn shade_hit(
             albedo,
         }),
         ShadingMode::Pbr => pbr_color(PbrInput {
-            normal: hit.normal,
+            normal: material_normal(hit.normal, hit.uv, hit.material.normal_map.as_ref(), uv),
             light_direction: scene.light_direction,
             view_direction,
             albedo,
@@ -148,6 +148,41 @@ fn shade_hit(
             unreachable!("non-direct shading mode reached the direct shader")
         }
     }
+}
+
+fn material_normal(
+    geometric_normal: Vector3<f32>,
+    unscaled_uv: nalgebra::Vector2<f32>,
+    normal_map: Option<&MaterialProperty<Vector3<f32>>>,
+    scaled_uv: nalgebra::Vector2<f32>,
+) -> Vector3<f32> {
+    let Some(normal_map) = normal_map else {
+        return geometric_normal;
+    };
+
+    let tangent_space_normal = normal_map.sample(scaled_uv) * 2.0 - Vector3::repeat(1.0);
+    if tangent_space_normal.norm_squared() == 0.0 {
+        return geometric_normal;
+    }
+
+    let angle = unscaled_uv.x * 2.0 * std::f32::consts::PI;
+    let tangent = Vector3::new(-angle.sin(), 0.0, angle.cos());
+    let tangent = tangent - geometric_normal * geometric_normal.dot(&tangent);
+    let tangent = if tangent.norm_squared() < 1.0e-8 {
+        let fallback = if geometric_normal.x.abs() < 0.9 {
+            Vector3::new(1.0, 0.0, 0.0)
+        } else {
+            Vector3::new(0.0, 1.0, 0.0)
+        };
+        (fallback - geometric_normal * geometric_normal.dot(&fallback)).normalize()
+    } else {
+        tangent.normalize()
+    };
+    let bitangent = geometric_normal.cross(&tangent);
+    (tangent * tangent_space_normal.x
+        + bitangent * tangent_space_normal.y
+        + geometric_normal * tangent_space_normal.z)
+        .normalize()
 }
 
 fn ray_direction(
@@ -245,6 +280,7 @@ mod tests {
             Arc::new(Material {
                 name: "test".to_string(),
                 albedo: MaterialProperty::Constant(Vector3::new(1.0, 1.0, 1.0)),
+                normal_map: None,
                 uv_scale: nalgebra::Vector2::repeat(1.0),
                 roughness: MaterialProperty::Constant(0.5),
                 metalness: MaterialProperty::Constant(0.0),
@@ -282,6 +318,7 @@ mod tests {
                 Arc::new(Material {
                     name: "test".to_string(),
                     albedo: MaterialProperty::Constant(Vector3::new(1.0, 1.0, 1.0)),
+                    normal_map: None,
                     uv_scale: nalgebra::Vector2::repeat(1.0),
                     roughness: MaterialProperty::Constant(0.5),
                     metalness: MaterialProperty::Constant(0.0),
@@ -329,6 +366,7 @@ mod tests {
                         1,
                         vec![Vector3::new(0.0, 1.0, 0.0)],
                     ))),
+                    normal_map: None,
                     uv_scale: nalgebra::Vector2::repeat(1.0),
                     roughness: MaterialProperty::Constant(0.5),
                     metalness: MaterialProperty::Constant(0.0),
@@ -341,6 +379,36 @@ mod tests {
         assert!((color.x - SPECULAR_STRENGTH).abs() < f32::EPSILON);
         assert!((color.y - (AMBIENT_STRENGTH + 1.0 + SPECULAR_STRENGTH)).abs() < f32::EPSILON);
         assert!((color.z - SPECULAR_STRENGTH).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn normal_map_uses_the_tangent_space_identity_vector() {
+        let normal = Vector3::new(0.0, 0.0, 1.0);
+        let normal_map = MaterialProperty::Constant(Vector3::new(0.5, 0.5, 1.0));
+
+        assert_eq!(
+            material_normal(
+                normal,
+                nalgebra::Vector2::new(0.25, 0.5),
+                Some(&normal_map),
+                nalgebra::Vector2::new(0.25, 0.5),
+            ),
+            normal,
+        );
+    }
+
+    #[test]
+    fn normal_map_perturbs_the_geometric_normal() {
+        let normal_map = MaterialProperty::Constant(Vector3::new(1.0, 0.5, 0.5));
+        let normal = material_normal(
+            Vector3::new(0.0, 0.0, 1.0),
+            nalgebra::Vector2::new(0.0, 0.5),
+            Some(&normal_map),
+            nalgebra::Vector2::new(0.0, 0.5),
+        );
+
+        assert!(normal.x > 0.99);
+        assert!(normal.z.abs() < 0.01);
     }
 
     fn assert_render_matches_gold(
