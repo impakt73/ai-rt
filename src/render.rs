@@ -127,13 +127,8 @@ fn shade_hit(
 
     let hit_point = origin + ray_direction * hit.distance;
     let view_direction = (origin - hit_point).normalize();
-    let albedo = hit
-        .material
-        .texture
-        .as_ref()
-        .map_or(hit.material.albedo, |texture| {
-            texture.sample(hit.uv.component_mul(&hit.material.uv_scale))
-        });
+    let uv = hit.uv.component_mul(&hit.material.uv_scale);
+    let albedo = hit.material.albedo.sample(uv);
     match scene.shading_mode {
         ShadingMode::Phong => phong_color(ShaderInput {
             normal: hit.normal,
@@ -146,8 +141,8 @@ fn shade_hit(
             light_direction: scene.light_direction,
             view_direction,
             albedo,
-            roughness: hit.material.roughness,
-            metalness: hit.material.metalness,
+            roughness: hit.material.roughness.sample(uv),
+            metalness: hit.material.metalness.sample(uv),
         }),
         ShadingMode::Barycentrics | ShadingMode::Mlp => {
             unreachable!("non-direct shading mode reached the direct shader")
@@ -203,7 +198,10 @@ fn render_mlp_tile(
             normal: hit.normal,
             light_direction: scene.light_direction,
             view_direction: (origin - hit_point).normalize(),
-            albedo: hit.material.albedo,
+            albedo: hit
+                .material
+                .albedo
+                .sample(hit.uv.component_mul(&hit.material.uv_scale)),
         };
         features.extend(input.feature_row());
         destinations.push(morton_index);
@@ -232,7 +230,7 @@ mod tests {
     use crate::{
         geometry::generate_sphere,
         image::{Texture, row_major_pixels},
-        scene::{Camera, DEFAULT_SCENE_PATH, Material, Sphere, load_scene},
+        scene::{Camera, DEFAULT_SCENE_PATH, Material, MaterialProperty, Sphere, load_scene},
         shader::{AMBIENT_STRENGTH, SPECULAR_STRENGTH},
     };
     use bvh::bvh::Bvh;
@@ -242,11 +240,10 @@ mod tests {
             Point3::new(0.0, 0.0, -3.0),
             1.0,
             Arc::new(Material {
-                albedo: Vector3::new(1.0, 1.0, 1.0),
-                texture: None,
+                albedo: MaterialProperty::Constant(Vector3::new(1.0, 1.0, 1.0)),
                 uv_scale: nalgebra::Vector2::repeat(1.0),
-                roughness: 0.5,
-                metalness: 0.0,
+                roughness: MaterialProperty::Constant(0.5),
+                metalness: MaterialProperty::Constant(0.0),
             }),
         )
     }
@@ -278,11 +275,10 @@ mod tests {
                 Point3::new(100.0, 0.0, -3.0),
                 1.0,
                 Arc::new(Material {
-                    albedo: Vector3::new(1.0, 1.0, 1.0),
-                    texture: None,
+                    albedo: MaterialProperty::Constant(Vector3::new(1.0, 1.0, 1.0)),
                     uv_scale: nalgebra::Vector2::repeat(1.0),
-                    roughness: 0.5,
-                    metalness: 0.0,
+                    roughness: MaterialProperty::Constant(0.5),
+                    metalness: MaterialProperty::Constant(0.0),
                 }),
             ),
         ]);
@@ -320,15 +316,14 @@ mod tests {
                 barycentrics: Vector3::repeat(1.0 / 3.0),
                 uv: nalgebra::Vector2::new(0.5, 0.5),
                 material: Arc::new(Material {
-                    albedo: Vector3::new(1.0, 0.0, 0.0),
-                    texture: Some(Arc::new(Texture::from_pixels(
+                    albedo: MaterialProperty::Texture(Arc::new(Texture::from_pixels(
                         1,
                         1,
                         vec![Vector3::new(0.0, 1.0, 0.0)],
                     ))),
                     uv_scale: nalgebra::Vector2::repeat(1.0),
-                    roughness: 0.5,
-                    metalness: 0.0,
+                    roughness: MaterialProperty::Constant(0.5),
+                    metalness: MaterialProperty::Constant(0.0),
                 }),
             },
             &scene,

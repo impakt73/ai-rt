@@ -42,11 +42,9 @@ Specify the image dimensions and output filename with CLI arguments:
 cargo run -- --width 128 --height 96 --output render.png
 ```
 
-Select the shading mode explicitly when rendering. Phong uses the selected
-material's optional `texture` filename as the diffuse color, sampled from UVs
-generated for each sphere triangle. Set a material's `uv_scale = [u, v]` to
-tile the map across the sphere; without a texture it uses the material's RGB
-color:
+Select the shading mode explicitly when rendering. Material properties can be
+constants or texture maps, sampled from UVs generated for each sphere triangle.
+Set a material's `uv_scale = [u, v]` to tile maps across the sphere:
 
 ```sh
 cargo run -- --shading-mode barycentrics
@@ -63,20 +61,28 @@ cargo run -- --scene examples/scene.toml --output render.png
 
 Scene files contain `[camera]`, `[light]`, `[geometry]`, and `[materials.*]`
 sections, along with any number of `[[objects]]` sphere entries. Materials own
-their RGB `albedo`, optional `texture` path, optional `uv_scale = [u, v]`, and
-PBR `roughness` and `metalness` scalar inputs. Roughness and metalness default
-to `0.5` and `0.0`, respectively, and are currently constants for a material;
-they can be expanded to texture maps later. PBR uses Burley diffuse and
-Cook-Torrance GGX specular. Each object specifies a material by name with
-`material = "name"`.
+an `albedo`, `roughness`, and `metalness` property, each of which accepts a
+direct constant or a texture table. Texture maps use RGB images; scalar maps
+use their red channel. The explicit `constant` table form is also available:
+
+```toml
+[materials.example]
+albedo = { constant = [0.8, 0.4, 0.2] }
+roughness = { texture = "textures/default_roughness.png" }
+metalness = 0.0
+```
+
+Roughness and metalness default to `0.5` and `0.0`, respectively. PBR uses
+Burley diffuse and Cook-Torrance GGX specular. Each object specifies a material
+by name with `material = "name"`.
 If an object omits that field, the material named `default` is selected, or the
 only material is selected when the scene defines exactly one material.
-Positions and colors are XYZ/RGB arrays;
-camera and light `yaw`, `pitch`, and `roll` values are degrees. Relative
-texture paths are resolved from the scene file's directory. The checked-in
-template assigns the procedurally generated
-`textures/procedural_diffuse.png` texture to the `red_textured` material used
-by its first sphere.
+Positions and colors are XYZ/RGB arrays; camera and light `yaw`, `pitch`, and
+`roll` values are degrees. Relative texture paths are resolved from the scene
+file's directory. The checked-in template uses
+`textures/default_albedo.png`, `textures/default_roughness.png`, and
+`textures/default_metalness.png` on its first sphere, while its other spheres
+exercise constant material properties.
 
 `geometry.latitude_segments` and `geometry.longitude_segments` control the
 triangle density of the one unit sphere mesh that is shared by all objects.

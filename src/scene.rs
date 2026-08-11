@@ -77,27 +77,33 @@ fn default_longitude_segments() -> usize {
 
 #[derive(Debug, Deserialize)]
 struct MaterialDescription {
-    albedo: [f32; 3],
-    #[serde(default)]
-    texture: Option<std::path::PathBuf>,
+    albedo: MaterialPropertyDescription<[f32; 3]>,
     #[serde(default = "default_uv_scale")]
     uv_scale: [f32; 2],
     #[serde(default = "default_roughness")]
-    roughness: f32,
+    roughness: MaterialPropertyDescription<f32>,
     #[serde(default = "default_metalness")]
-    metalness: f32,
+    metalness: MaterialPropertyDescription<f32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum MaterialPropertyDescription<T> {
+    Constant(T),
+    Texture { texture: std::path::PathBuf },
+    NamedConstant { constant: T },
 }
 
 fn default_uv_scale() -> [f32; 2] {
     [1.0, 1.0]
 }
 
-fn default_roughness() -> f32 {
-    0.5
+fn default_roughness() -> MaterialPropertyDescription<f32> {
+    MaterialPropertyDescription::Constant(0.5)
 }
 
-fn default_metalness() -> f32 {
-    0.0
+fn default_metalness() -> MaterialPropertyDescription<f32> {
+    MaterialPropertyDescription::Constant(0.0)
 }
 
 #[derive(Debug, Deserialize)]
@@ -137,11 +143,41 @@ impl Sphere {
 
 #[derive(Debug)]
 pub(crate) struct Material {
-    pub(crate) albedo: Vector3<f32>,
-    pub(crate) texture: Option<Arc<Texture>>,
+    pub(crate) albedo: MaterialProperty<Vector3<f32>>,
     pub(crate) uv_scale: Vector2<f32>,
-    pub(crate) roughness: f32,
-    pub(crate) metalness: f32,
+    pub(crate) roughness: MaterialProperty<f32>,
+    pub(crate) metalness: MaterialProperty<f32>,
+}
+
+#[derive(Debug)]
+pub(crate) enum MaterialProperty<T> {
+    Constant(T),
+    Texture(Arc<Texture>),
+}
+
+pub(crate) trait TextureSample: Copy {
+    fn from_texture_sample(sample: Vector3<f32>) -> Self;
+}
+
+impl TextureSample for Vector3<f32> {
+    fn from_texture_sample(sample: Vector3<f32>) -> Self {
+        sample
+    }
+}
+
+impl TextureSample for f32 {
+    fn from_texture_sample(sample: Vector3<f32>) -> Self {
+        sample.x
+    }
+}
+
+impl<T: TextureSample> MaterialProperty<T> {
+    pub(crate) fn sample(&self, uv: Vector2<f32>) -> T {
+        match self {
+            Self::Constant(value) => *value,
+            Self::Texture(texture) => T::from_texture_sample(texture.sample(uv)),
+        }
+    }
 }
 
 impl Bounded<f32, 3> for Sphere {
@@ -247,11 +283,12 @@ fn load_materials(
     descriptions
         .into_iter()
         .map(|(name, material)| {
-            if material
-                .albedo
-                .iter()
-                .any(|component| !component.is_finite())
-            {
+            let albedo = match material.albedo {
+                MaterialPropertyDescription::Constant(value)
+                | MaterialPropertyDescription::NamedConstant { constant: value } => value,
+                MaterialPropertyDescription::Texture { .. } => [0.0; 3],
+            };
+            if albedo.iter().any(|component| !component.is_finite()) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!("material {name:?} albedo values must be finite"),
@@ -271,48 +308,74 @@ fn load_materials(
                 )
                 .into());
             }
-            if !material.roughness.is_finite() || !(0.0..=1.0).contains(&material.roughness) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("material {name:?} roughness must be finite and between zero and one"),
-                )
-                .into());
-            }
-            if !material.metalness.is_finite() || !(0.0..=1.0).contains(&material.metalness) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("material {name:?} metalness must be finite and between zero and one"),
-                )
-                .into());
-            }
-
-            let texture = material
-                .texture
-                .map(|texture_path| {
-                    let resolved_path = if texture_path.is_absolute() {
-                        texture_path
-                    } else {
-                        scene_path
-                            .parent()
-                            .unwrap_or_else(|| Path::new("."))
-                            .join(texture_path)
-                    };
-                    Texture::load(&resolved_path).map(Arc::new)
-                })
-                .transpose()?;
+            validate_scalar_property(&material.roughness, &name, "roughness")?;
+            validate_scalar_property(&material.metalness, &name, "metalness")?;
 
             Ok((
                 name,
                 Arc::new(Material {
-                    albedo: vector3_from_array(material.albedo),
-                    texture,
+                    albedo: load_property(material.albedo, scene_path).map(|property| {
+                        match property {
+                            MaterialProperty::Constant(value) => {
+                                MaterialProperty::Constant(vector3_from_array(value))
+                            }
+                            MaterialProperty::Texture(texture) => {
+                                MaterialProperty::Texture(texture)
+                            }
+                        }
+                    })?,
                     uv_scale: Vector2::from(material.uv_scale),
-                    roughness: material.roughness,
-                    metalness: material.metalness,
+                    roughness: load_property(material.roughness, scene_path)?,
+                    metalness: load_property(material.metalness, scene_path)?,
                 }),
             ))
         })
         .collect()
+}
+
+fn validate_scalar_property(
+    property: &MaterialPropertyDescription<f32>,
+    name: &str,
+    property_name: &str,
+) -> Result<(), Box<dyn Error>> {
+    let value = match property {
+        MaterialPropertyDescription::Constant(value)
+        | MaterialPropertyDescription::NamedConstant { constant: value } => Some(*value),
+        MaterialPropertyDescription::Texture { .. } => None,
+    };
+    if value.is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("material {name:?} {property_name} must be finite and between zero and one"),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn load_property<T>(
+    property: MaterialPropertyDescription<T>,
+    scene_path: &Path,
+) -> Result<MaterialProperty<T>, Box<dyn Error>> {
+    match property {
+        MaterialPropertyDescription::Constant(value)
+        | MaterialPropertyDescription::NamedConstant { constant: value } => {
+            Ok(MaterialProperty::Constant(value))
+        }
+        MaterialPropertyDescription::Texture { texture } => {
+            let resolved_path = if texture.is_absolute() {
+                texture
+            } else {
+                scene_path
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .join(texture)
+            };
+            Ok(MaterialProperty::Texture(Arc::new(Texture::load(
+                &resolved_path,
+            )?)))
+        }
+    }
 }
 
 fn select_material(
@@ -403,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn materials_parse_texture_and_uv_scale_properties() {
+    fn materials_parse_constant_and_texture_properties() {
         let scene: SceneDescription = toml::from_str(
             r#"
             [camera]
@@ -412,13 +475,13 @@ mod tests {
             [light]
 
             [materials.first]
-            albedo = [1.0, 1.0, 1.0]
-            texture = "textures/first.png"
+            albedo = { constant = [1.0, 1.0, 1.0] }
             uv_scale = [2.0, 3.0]
+            roughness = { texture = "textures/roughness.png" }
 
             [materials.second]
             albedo = [0.5, 0.5, 0.5]
-            texture = "textures/second.png"
+            metalness = { texture = "textures/metalness.png" }
 
             [[objects]]
             position = [0.0, 0.0, -3.0]
@@ -433,14 +496,20 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            scene.materials["first"].texture.as_deref(),
-            Some(Path::new("textures/first.png")),
-        );
-        assert_eq!(
-            scene.materials["second"].texture.as_deref(),
-            Some(Path::new("textures/second.png")),
-        );
+        assert!(matches!(
+            &scene.materials["first"].albedo,
+            MaterialPropertyDescription::NamedConstant { .. }
+        ));
+        assert!(matches!(
+            &scene.materials["first"].roughness,
+            MaterialPropertyDescription::Texture { texture }
+                if texture == Path::new("textures/roughness.png")
+        ));
+        assert!(matches!(
+            &scene.materials["second"].metalness,
+            MaterialPropertyDescription::Texture { texture }
+                if texture == Path::new("textures/metalness.png")
+        ));
         assert_eq!(scene.materials["first"].uv_scale, [2.0, 3.0]);
         assert_eq!(scene.objects[0].material.as_deref(), Some("first"));
     }
@@ -470,20 +539,91 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(scene.materials["metal"].roughness, 0.25);
-        assert_eq!(scene.materials["metal"].metalness, 0.75);
-        assert_eq!(scene.materials["plastic"].roughness, 0.5);
-        assert_eq!(scene.materials["plastic"].metalness, 0.0);
+        assert!(matches!(
+            &scene.materials["metal"].roughness,
+            MaterialPropertyDescription::Constant(0.25)
+        ));
+        assert!(matches!(
+            &scene.materials["metal"].metalness,
+            MaterialPropertyDescription::Constant(0.75)
+        ));
+        assert!(matches!(
+            &scene.materials["plastic"].roughness,
+            MaterialPropertyDescription::Constant(0.5)
+        ));
+        assert!(matches!(
+            &scene.materials["plastic"].metalness,
+            MaterialPropertyDescription::Constant(0.0)
+        ));
     }
 
     #[test]
-    fn scene_loads_texture_on_only_the_configured_sphere() {
+    fn scene_loads_texture_and_constant_properties() {
         let scene_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(DEFAULT_SCENE_PATH);
         let scene = load_scene(&scene_path, ShadingMode::Barycentrics, None).unwrap();
 
-        assert!(scene.spheres[0].material.texture.is_some());
-        assert!(scene.spheres[1].material.texture.is_none());
-        assert!(scene.spheres[2].material.texture.is_none());
+        assert!(matches!(
+            &scene.spheres[0].material.albedo,
+            MaterialProperty::Texture(_)
+        ));
+        assert!(matches!(
+            &scene.spheres[1].material.albedo,
+            MaterialProperty::Constant(_)
+        ));
+        assert!(matches!(
+            &scene.spheres[2].material.albedo,
+            MaterialProperty::Constant(_)
+        ));
+        assert!(matches!(
+            &scene.spheres[0].material.roughness,
+            MaterialProperty::Texture(_)
+        ));
+        assert!(matches!(
+            &scene.spheres[0].material.metalness,
+            MaterialProperty::Texture(_)
+        ));
+        assert!(matches!(
+            &scene.spheres[1].material.roughness,
+            MaterialProperty::Constant(_)
+        ));
+        assert!(matches!(
+            &scene.spheres[1].material.metalness,
+            MaterialProperty::Constant(_)
+        ));
+
+        let uv = Vector2::zeros();
+        assert_eq!(
+            scene.spheres[0].material.albedo.sample(uv),
+            Vector3::new(220.0, 40.0, 40.0) / 255.0
+        );
+        assert_eq!(scene.spheres[0].material.roughness.sample(uv), 64.0 / 255.0);
+        assert_eq!(scene.spheres[0].material.metalness.sample(uv), 0.0);
+        assert_eq!(
+            scene.spheres[1].material.albedo.sample(uv),
+            Vector3::new(0.0, 0.7, 1.0)
+        );
+        assert_eq!(scene.spheres[1].material.roughness.sample(uv), 0.5);
+        assert_eq!(scene.spheres[1].material.metalness.sample(uv), 0.0);
+    }
+
+    #[test]
+    fn material_property_samples_rgb_and_scalar_texture_values() {
+        let texture = Arc::new(Texture::from_pixels(
+            1,
+            1,
+            vec![Vector3::new(0.25, 0.5, 0.75)],
+        ));
+
+        let albedo: MaterialProperty<Vector3<f32>> = MaterialProperty::Texture(texture.clone());
+        let roughness: MaterialProperty<f32> = MaterialProperty::Texture(texture.clone());
+        let constant = MaterialProperty::Constant(0.75);
+
+        assert_eq!(
+            albedo.sample(Vector2::zeros()),
+            Vector3::new(0.25, 0.5, 0.75)
+        );
+        assert_eq!(roughness.sample(Vector2::zeros()), 0.25);
+        assert_eq!(constant.sample(Vector2::zeros()), 0.75);
     }
 
     #[test]
@@ -507,6 +647,9 @@ mod tests {
 
         let materials = load_materials(scene.materials, Path::new("scene.toml")).unwrap();
         let selected = select_material(scene.objects[0].material.as_deref(), &materials).unwrap();
-        assert_eq!(selected.albedo, Vector3::new(1.0, 0.0, 0.0));
+        assert_eq!(
+            selected.albedo.sample(Vector2::zeros()),
+            Vector3::new(1.0, 0.0, 0.0)
+        );
     }
 }

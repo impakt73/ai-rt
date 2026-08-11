@@ -20,15 +20,14 @@ roll = 0.0
 latitude_segments = 32
 longitude_segments = 64
 
-[materials.red_textured]
-albedo = [1.0, 0.0, 0.0]
-texture = "textures/procedural_diffuse.png"
+[materials.textured]
+albedo = { texture = "textures/default_albedo.png" }
 # Repeat the small map across the sphere instead of stretching it once.
 uv_scale = [8.0, 8.0]
-roughness = 0.5
-metalness = 0.0
+roughness = { texture = "textures/default_roughness.png" }
+metalness = { texture = "textures/default_metalness.png" }
 
-[materials.blue]
+[materials.constant]
 albedo = [0.0, 0.7, 1.0]
 roughness = 0.5
 metalness = 0.0
@@ -41,12 +40,12 @@ metalness = 1.0
 [[objects]]
 position = [0.0, 0.0, -3.0]
 radius = 1.0
-material = "red_textured"
+material = "textured"
 
 [[objects]]
 position = [-1.5, -0.25, -4.0]
 radius = 0.65
-material = "blue"
+material = "constant"
 
 [[objects]]
 position = [1.35, 0.35, -4.5]
