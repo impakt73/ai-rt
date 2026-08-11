@@ -14,6 +14,8 @@ pub(crate) struct SphereGeometry {
     pub(crate) triangles: Vec<Triangle>,
 }
 
+type MeshIntersection = (f32, Vector3<f32>, Vector3<f32>, Vector2<f32>);
+
 pub(crate) fn generate_sphere(
     latitude_segments: usize,
     longitude_segments: usize,
@@ -113,7 +115,7 @@ pub(crate) fn ray_mesh_intersection(
     sphere_position: Point3<f32>,
     sphere_radius: f32,
     geometry: &SphereGeometry,
-) -> Option<(f32, Vector3<f32>, Vector3<f32>, Vector2<f32>)> {
+) -> Option<MeshIntersection> {
     let local_origin = Point3::from((origin - sphere_position) / sphere_radius);
     let local_direction = direction / sphere_radius;
 
