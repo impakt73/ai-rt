@@ -1,0 +1,35 @@
+{
+  "schema_version": 2,
+  "input_size": 17,
+  "latent_size": 8,
+  "output_size": 3,
+  "hidden_sizes": [
+    64,
+    64
+  ],
+  "seed": 42,
+  "samples": 8192,
+  "epochs": 100,
+  "batch_size": 256,
+  "feature_order": [
+    "normal.x",
+    "normal.y",
+    "normal.z",
+    "light.x",
+    "light.y",
+    "light.z",
+    "view.x",
+    "view.y",
+    "view.z",
+    "latent.0",
+    "latent.1",
+    "latent.2",
+    "latent.3",
+    "latent.4",
+    "latent.5",
+    "latent.6",
+    "latent.7"
+  ],
+  "target_shader": "pbr",
+  "pbr_shader_version": 1
+}

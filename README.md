@@ -9,7 +9,8 @@ the compiler and automated tests as the renderer grows.
 The binary ray traces scenes described in TOML. The default barycentric shading
 mode visualizes triangle coordinates as RGB colors; Phong shading remains
 available with `--shading-mode phong`, PBR shading is available with
-`--shading-mode pbr`, and Burn MLP shading is available with `--shading-mode mlp`.
+`--shading-mode pbr`, and a Burn MLP approximation of the PBR shader is
+available with `--shading-mode mlp`.
 The background is black, pixels are ray
 traced in parallel with Rayon in 8x8 tiles, and the checked-in `scene.toml`
 template contains three spheres. By default, the program loads `scene.toml`
@@ -50,7 +51,7 @@ Set a material's `uv_scale = [u, v]` to tile maps across the sphere:
 cargo run -- --shading-mode barycentrics
 cargo run -- --shading-mode phong
 cargo run -- --shading-mode pbr
-cargo run -- --shading-mode mlp --shader-model models/phong_mlp_v1/model
+cargo run -- --shading-mode mlp --shader-model models/pbr_mlp_v1/model
 ```
 
 Use a different scene description with `--scene`:
@@ -70,6 +71,8 @@ use their red channel. The explicit `constant` table form is also available:
 albedo = { constant = [0.8, 0.4, 0.2] }
 roughness = { texture = "textures/default_roughness.png" }
 metalness = 0.0
+# MLP scenes also require a floating-point latent texture:
+# latent = { texture = "latents/example.latent" }
 ```
 
 Roughness and metalness default to `0.5` and `0.0`, respectively. PBR uses
@@ -101,23 +104,29 @@ cargo fmt --check
 cargo check
 ```
 
-## Training the MLP
+## Training the PBR MLP
 
-The optional training binary distills the shared Phong reference function into
-a small Burn MLP. The default training configuration is intentionally short so
-the initial checkpoint is only a starting point for later refinement:
+The optional training binary distills the shared PBR reference function into a
+small Burn MLP while jointly learning a latent vector at every texel of each
+source material's latent texture. The default grid is 8x8; use `--latent-width
+1 --latent-height 1` for one global vector per material. MLP scenes must
+reference the exported textures from each material.
 
 ```sh
 cargo run --release --features train --bin train_shader -- \
+  --scene scene.toml \
   --samples 8192 --epochs 2 --batch-size 256 \
-  --output models/phong_mlp_v1/model
+  --latent-size 8 --latent-width 8 --latent-height 8 \
+  --output models/pbr_mlp_v1/model
 ```
 
-The command writes a Burn MessagePack checkpoint and a JSON manifest beside
-it. Runtime inference uses the CPU Flex backend and evaluates visible MLP hits
-in batches per render tile rather than creating a tensor per pixel. The model
-input contract is normal, light direction, view direction, and material color,
-in that order.
+The command writes a Burn MessagePack checkpoint and JSON manifest beside it,
+plus `latents/manifest.json` and one multi-channel `.latent` file per material. Runtime
+inference uses the CPU Flex backend and evaluates visible MLP hits in batches
+per render tile rather than creating a tensor per pixel. The model input
+contract is normal, light direction, view direction, and the material latent
+vector, in that order. The old `phong_mlp_v1` checkpoint is not compatible with
+this PBR contract.
 
 ## License
 

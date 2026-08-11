@@ -1,6 +1,7 @@
 mod cli;
 mod geometry;
 mod image;
+mod latent;
 mod mlp;
 mod render;
 mod scene;

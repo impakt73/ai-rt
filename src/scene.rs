@@ -12,6 +12,7 @@ use crate::{
     cli::ShadingMode,
     geometry::{SphereGeometry, generate_sphere},
     image::Texture,
+    latent::LatentTexture,
     mlp::LoadedMlpShader,
 };
 
@@ -78,12 +79,20 @@ fn default_longitude_segments() -> usize {
 #[derive(Debug, Deserialize)]
 struct MaterialDescription {
     albedo: MaterialPropertyDescription<[f32; 3]>,
+    #[serde(default)]
+    latent: Option<LatentTextureDescription>,
     #[serde(default = "default_uv_scale")]
     uv_scale: [f32; 2],
     #[serde(default = "default_roughness")]
     roughness: MaterialPropertyDescription<f32>,
     #[serde(default = "default_metalness")]
     metalness: MaterialPropertyDescription<f32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum LatentTextureDescription {
+    Texture { texture: std::path::PathBuf },
 }
 
 #[derive(Debug, Deserialize)]
@@ -143,10 +152,12 @@ impl Sphere {
 
 #[derive(Debug)]
 pub(crate) struct Material {
+    pub(crate) name: String,
     pub(crate) albedo: MaterialProperty<Vector3<f32>>,
     pub(crate) uv_scale: Vector2<f32>,
     pub(crate) roughness: MaterialProperty<f32>,
     pub(crate) metalness: MaterialProperty<f32>,
+    pub(crate) latent: Option<Arc<LatentTexture>>,
 }
 
 #[derive(Debug)]
@@ -264,6 +275,32 @@ pub(crate) fn load_scene(
         )?)?)),
         _ => None,
     };
+    if let Some(model) = mlp.as_ref() {
+        for sphere in &spheres {
+            let Some(latent) = sphere.material.latent.as_ref() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "material {:?} requires a latent texture for MLP shading",
+                        sphere.material.name
+                    ),
+                )
+                .into());
+            };
+            if latent.channels() != model.latent_size() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "material {:?} latent texture has {} channels, expected {}",
+                        sphere.material.name,
+                        latent.channels(),
+                        model.latent_size()
+                    ),
+                )
+                .into());
+            }
+        }
+    }
 
     Ok(RenderScene {
         camera,
@@ -310,10 +347,12 @@ fn load_materials(
             }
             validate_scalar_property(&material.roughness, &name, "roughness")?;
             validate_scalar_property(&material.metalness, &name, "metalness")?;
+            let latent = load_latent_texture(material.latent, scene_path)?;
 
             Ok((
-                name,
+                name.clone(),
                 Arc::new(Material {
+                    name: name.clone(),
                     albedo: load_property(material.albedo, scene_path).map(|property| {
                         match property {
                             MaterialProperty::Constant(value) => {
@@ -327,10 +366,29 @@ fn load_materials(
                     uv_scale: Vector2::from(material.uv_scale),
                     roughness: load_property(material.roughness, scene_path)?,
                     metalness: load_property(material.metalness, scene_path)?,
+                    latent,
                 }),
             ))
         })
         .collect()
+}
+
+fn load_latent_texture(
+    property: Option<LatentTextureDescription>,
+    scene_path: &Path,
+) -> Result<Option<Arc<LatentTexture>>, Box<dyn Error>> {
+    let Some(LatentTextureDescription::Texture { texture }) = property else {
+        return Ok(None);
+    };
+    let resolved_path = if texture.is_absolute() {
+        texture
+    } else {
+        scene_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(texture)
+    };
+    Ok(Some(Arc::new(LatentTexture::load(&resolved_path)?)))
 }
 
 fn validate_scalar_property(
@@ -476,6 +534,7 @@ mod tests {
 
             [materials.first]
             albedo = { constant = [1.0, 1.0, 1.0] }
+            latent = { texture = "latents/first.latent" }
             uv_scale = [2.0, 3.0]
             roughness = { texture = "textures/roughness.png" }
 
@@ -504,6 +563,11 @@ mod tests {
             &scene.materials["first"].roughness,
             MaterialPropertyDescription::Texture { texture }
                 if texture == Path::new("textures/roughness.png")
+        ));
+        assert!(matches!(
+            &scene.materials["first"].latent,
+            Some(LatentTextureDescription::Texture { texture })
+                if texture == Path::new("latents/first.latent")
         ));
         assert!(matches!(
             &scene.materials["second"].metalness,
@@ -582,6 +646,15 @@ mod tests {
             &scene.spheres[0].material.metalness,
             MaterialProperty::Texture(_)
         ));
+        assert_eq!(
+            scene.spheres[0]
+                .material
+                .latent
+                .as_ref()
+                .unwrap()
+                .channels(),
+            8
+        );
         assert!(matches!(
             &scene.spheres[1].material.roughness,
             MaterialProperty::Constant(_)

@@ -7,7 +7,7 @@ use crate::{
     geometry::ray_mesh_intersection,
     image::{PixelData, TILE_SIZE, morton_coordinates},
     scene::{Material, RenderScene},
-    shader::{PbrInput, ShaderInput, pbr_color, phong_color},
+    shader::{MlpInput, PbrInput, ShaderInput, pbr_color, phong_color},
 };
 
 const HALF_FOV_TANGENT: f32 = 0.41421357;
@@ -194,16 +194,19 @@ fn render_mlp_tile(
             continue;
         };
         let hit_point = origin + direction * hit.distance;
-        let input = ShaderInput {
+        let input = MlpInput {
             normal: hit.normal,
             light_direction: scene.light_direction,
             view_direction: (origin - hit_point).normalize(),
-            albedo: hit
-                .material
-                .albedo
-                .sample(hit.uv.component_mul(&hit.material.uv_scale)),
         };
-        features.extend(input.feature_row());
+        let uv = hit.uv.component_mul(&hit.material.uv_scale);
+        let latent = hit
+            .material
+            .latent
+            .as_ref()
+            .expect("MLP shading requires a material latent texture")
+            .sample(uv);
+        features.extend(input.feature_row(&latent));
         destinations.push(morton_index);
     }
 
@@ -240,10 +243,12 @@ mod tests {
             Point3::new(0.0, 0.0, -3.0),
             1.0,
             Arc::new(Material {
+                name: "test".to_string(),
                 albedo: MaterialProperty::Constant(Vector3::new(1.0, 1.0, 1.0)),
                 uv_scale: nalgebra::Vector2::repeat(1.0),
                 roughness: MaterialProperty::Constant(0.5),
                 metalness: MaterialProperty::Constant(0.0),
+                latent: None,
             }),
         )
     }
@@ -275,10 +280,12 @@ mod tests {
                 Point3::new(100.0, 0.0, -3.0),
                 1.0,
                 Arc::new(Material {
+                    name: "test".to_string(),
                     albedo: MaterialProperty::Constant(Vector3::new(1.0, 1.0, 1.0)),
                     uv_scale: nalgebra::Vector2::repeat(1.0),
                     roughness: MaterialProperty::Constant(0.5),
                     metalness: MaterialProperty::Constant(0.0),
+                    latent: None,
                 }),
             ),
         ]);
@@ -316,6 +323,7 @@ mod tests {
                 barycentrics: Vector3::repeat(1.0 / 3.0),
                 uv: nalgebra::Vector2::new(0.5, 0.5),
                 material: Arc::new(Material {
+                    name: "test".to_string(),
                     albedo: MaterialProperty::Texture(Arc::new(Texture::from_pixels(
                         1,
                         1,
@@ -324,6 +332,7 @@ mod tests {
                     uv_scale: nalgebra::Vector2::repeat(1.0),
                     roughness: MaterialProperty::Constant(0.5),
                     metalness: MaterialProperty::Constant(0.0),
+                    latent: None,
                 }),
             },
             &scene,
@@ -389,5 +398,19 @@ mod tests {
             &pixels,
             include_bytes!("../tests/gold/default_scene_pbr.png"),
         );
+    }
+
+    #[test]
+    fn mlp_render_loads_the_pbr_model_and_latent_assets() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let scene = load_scene(
+            &root.join(DEFAULT_SCENE_PATH),
+            ShadingMode::Mlp,
+            Some(&root.join("models/pbr_mlp_v1/model")),
+        )
+        .unwrap();
+        let pixels = render(8, 8, &scene);
+
+        assert!(pixels.iter().any(|pixel| *pixel != PixelData::default()));
     }
 }

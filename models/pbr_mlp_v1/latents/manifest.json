@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "latent_size": 8,
+  "width": 8,
+  "height": 8,
+  "materials": [
+    {
+      "name": "textured",
+      "texture": "material_0.latent"
+    },
+    {
+      "name": "constant",
+      "texture": "material_1.latent"
+    },
+    {
+      "name": "gold",
+      "texture": "material_2.latent"
+    }
+  ]
+}

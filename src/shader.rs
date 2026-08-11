@@ -5,7 +5,11 @@ pub(crate) const SPECULAR_STRENGTH: f32 = 0.35;
 pub(crate) const SPECULAR_SHININESS: f32 = 32.0;
 pub(crate) const DIELECTRIC_F0: f32 = 0.04;
 const PI: f32 = std::f32::consts::PI;
-pub(crate) const INPUT_SIZE: usize = 12;
+pub(crate) const DIRECTION_INPUT_SIZE: usize = 9;
+#[allow(dead_code)]
+pub(crate) const DEFAULT_LATENT_SIZE: usize = 8;
+#[allow(dead_code)]
+pub(crate) const DEFAULT_LATENT_TEXTURE_SIZE: usize = 8;
 pub(crate) const OUTPUT_SIZE: usize = 3;
 
 #[derive(Clone, Copy, Debug)]
@@ -26,9 +30,17 @@ pub(crate) struct PbrInput {
     pub(crate) metalness: f32,
 }
 
-impl ShaderInput {
-    pub(crate) fn feature_row(self) -> [f32; INPUT_SIZE] {
-        [
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MlpInput {
+    pub(crate) normal: Vector3<f32>,
+    pub(crate) light_direction: Vector3<f32>,
+    pub(crate) view_direction: Vector3<f32>,
+}
+
+impl MlpInput {
+    pub(crate) fn feature_row(self, latent: &[f32]) -> Vec<f32> {
+        let mut row = Vec::with_capacity(DIRECTION_INPUT_SIZE + latent.len());
+        row.extend([
             self.normal.x,
             self.normal.y,
             self.normal.z,
@@ -38,10 +50,9 @@ impl ShaderInput {
             self.view_direction.x,
             self.view_direction.y,
             self.view_direction.z,
-            self.albedo.x,
-            self.albedo.y,
-            self.albedo.z,
-        ]
+        ]);
+        row.extend_from_slice(latent);
+        row
     }
 }
 
@@ -191,20 +202,17 @@ mod tests {
     }
 
     #[test]
-    fn feature_row_has_stable_order() {
-        let row = ShaderInput {
+    fn mlp_feature_row_appends_latent_values_after_directions() {
+        let row = MlpInput {
             normal: Vector3::new(1.0, 2.0, 3.0),
             light_direction: Vector3::new(4.0, 5.0, 6.0),
             view_direction: Vector3::new(7.0, 8.0, 9.0),
-            albedo: Vector3::new(10.0, 11.0, 12.0),
         }
-        .feature_row();
+        .feature_row(&[10.0, 11.0]);
 
         assert_eq!(
             row,
-            [
-                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0
-            ]
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0]
         );
     }
 }
