@@ -374,4 +374,20 @@ mod tests {
             include_bytes!("../tests/gold/default_scene_barycentrics.png"),
         );
     }
+
+    #[test]
+    fn pbr_render_matches_gold_image() {
+        let scene_path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(DEFAULT_SCENE_PATH);
+        let scene = load_scene(&scene_path, ShadingMode::Pbr, None).unwrap();
+        let pixels = render(32, 32, &scene);
+
+        assert_render_matches_gold(
+            "default_scene_pbr",
+            32,
+            32,
+            &pixels,
+            include_bytes!("../tests/gold/default_scene_pbr.png"),
+        );
+    }
 }
